@@ -1,0 +1,22 @@
+{
+  "name": "vue-3.x-demos",
+  "version": "0.1.0",
+  "description": "Demos implement by Vue 3.x",
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "repository": "https://github.com/ustbhuangyi/vue-3.x-demos",
+  "author": "ustbhuangyi",
+  "devDependencies": {
+    "babel-core": "^6.22.1",
+    "babel-loader": "^7.1.2",
+    "babel-plugin-transform-object-rest-spread": "^6.23.0",
+    "babel-preset-env": "^1.5.1",
+    "webpack": "^4.41.0",
+    "webpack-dev-middleware": "^3.5.0",
+    "webpack-hot-middleware": "^2.24.3",
+    "css-loader": "^3.2.0",
+    "style-loader": "^1.0.0",
+    "express": "^4.17.1"
+  }
+}
