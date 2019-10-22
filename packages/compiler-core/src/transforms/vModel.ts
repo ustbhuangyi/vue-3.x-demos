@@ -4,10 +4,11 @@ import {
   createObjectProperty,
   createCompoundExpression,
   NodeTypes,
-  Property
+  Property,
+  ElementTypes
 } from '../ast'
 import { createCompilerError, ErrorCodes } from '../errors'
-import { isMemberExpression } from '../utils'
+import { isMemberExpression, isSimpleIdentifier, hasScopeRef } from '../utils'
 
 export const transformModel: DirectiveTransform = (dir, node, context) => {
   const { exp, arg } = dir
@@ -27,6 +28,18 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
     return createTransformProps()
   }
 
+  if (
+    !__BROWSER__ &&
+    context.prefixIdentifiers &&
+    isSimpleIdentifier(expString) &&
+    context.identifiers[expString]
+  ) {
+    context.onError(
+      createCompilerError(ErrorCodes.X_V_MODEL_ON_SCOPE_VARIABLE, exp.loc)
+    )
+    return createTransformProps()
+  }
+
   const propName = arg ? arg : createSimpleExpression('modelValue', true)
   const eventName = arg
     ? arg.type === NodeTypes.SIMPLE_EXPRESSION && arg.isStatic
@@ -39,7 +52,9 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
     : createSimpleExpression('onUpdate:modelValue', true)
 
   const props = [
+    // modelValue: foo
     createObjectProperty(propName, dir.exp!),
+    // "onUpdate:modelValue": $event => (foo = $event)
     createObjectProperty(
       eventName,
       createCompoundExpression([
@@ -50,8 +65,26 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
     )
   ]
 
-  if (dir.modifiers.length) {
-    // TODO add modelModifiers prop
+  // cache v-model handler if applicable (when it doesn't refer any scope vars)
+  if (
+    !__BROWSER__ &&
+    context.prefixIdentifiers &&
+    !hasScopeRef(exp, context.identifiers)
+  ) {
+    props[1].value = context.cache(props[1].value)
+  }
+
+  // modelModifiers: { foo: true, "bar-baz": true }
+  if (dir.modifiers.length && node.tagType === ElementTypes.COMPONENT) {
+    const modifiers = dir.modifiers
+      .map(m => (isSimpleIdentifier(m) ? m : JSON.stringify(m)) + `: true`)
+      .join(`, `)
+    props.push(
+      createObjectProperty(
+        `modelModifiers`,
+        createSimpleExpression(`{ ${modifiers} }`, false, dir.loc, true)
+      )
+    )
   }
 
   return createTransformProps(props)

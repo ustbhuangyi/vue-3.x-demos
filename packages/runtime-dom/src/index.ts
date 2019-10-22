@@ -1,13 +1,27 @@
 import { createRenderer } from '@vue/runtime-core'
 import { nodeOps } from './nodeOps'
 import { patchProp } from './patchProp'
+// Importing from the compiler, will be tree-shaken in prod
+import { isHTMLTag, isSVGTag } from '@vue/compiler-dom'
 
 const { render, createApp } = createRenderer<Node, Element>({
   patchProp,
   ...nodeOps
 })
 
-export { render, createApp }
+const wrappedCreateApp = () => {
+  const app = createApp()
+  // inject `isNativeTag` dev only
+  Object.defineProperty(app.config, 'isNativeTag', {
+    value: (tag: string) => isHTMLTag(tag) || isSVGTag(tag),
+    writable: false
+  })
+  return app
+}
+
+const exportedCreateApp = __DEV__ ? wrappedCreateApp : createApp
+
+export { render, exportedCreateApp as createApp }
 
 // DOM-only runtime helpers
 export {
@@ -17,6 +31,8 @@ export {
   vModelSelect,
   vModelDynamic
 } from './directives/vModel'
+
+export { withModifiers, withKeys } from './directives/vOn'
 
 // re-export everything from core
 // h, Component, reactivity API, nextTick, flags & types

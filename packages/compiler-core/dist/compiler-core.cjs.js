@@ -19,31 +19,24 @@ const PatchFlagNames = {
     [-1 /* BAIL */]: `BAIL`
 };
 
-const globalsWhitelist = new Set([
-    'Infinity',
-    'undefined',
-    'NaN',
-    'isFinite',
-    'isNaN',
-    'parseFloat',
-    'parseInt',
-    'decodeURI',
-    'decodeURIComponent',
-    'encodeURI',
-    'encodeURIComponent',
-    'Math',
-    'Number',
-    'Date',
-    'Array',
-    'Object',
-    'Boolean',
-    'String',
-    'RegExp',
-    'Map',
-    'Set',
-    'JSON',
-    'Intl'
-]);
+// Make a map and return a function for checking if a key
+// is in that map.
+//
+// IMPORTANT: all calls of this function must be prefixed with /*#__PURE__*/
+// So that rollup can tree-shake them if necessary.
+function makeMap(str, expectsLowerCase) {
+    const map = Object.create(null);
+    const list = str.split(',');
+    for (let i = 0; i < list.length; i++) {
+        map[list[i]] = true;
+    }
+    return expectsLowerCase ? val => !!map[val.toLowerCase()] : val => !!map[val];
+}
+
+const GLOBALS_WHITE_LISTED = 'Infinity,undefined,NaN,isFinite,isNaN,parseFloat,parseInt,decodeURI,' +
+    'decodeURIComponent,encodeURI,encodeURIComponent,Math,Number,Date,Array,' +
+    'Object,Boolean,String,RegExp,Map,Set,JSON,Intl';
+const isGloballyWhitelisted = /*#__PURE__*/ makeMap(GLOBALS_WHITE_LISTED);
 
 const EMPTY_OBJ =  Object.freeze({})
     ;
@@ -61,6 +54,7 @@ const isArray = Array.isArray;
 const isFunction = (val) => typeof val === 'function';
 const isString = (val) => typeof val === 'string';
 const isSymbol = (val) => typeof val === 'symbol';
+const isObject = (val) => val !== null && typeof val === 'object';
 const camelizeRE = /-(\w)/g;
 const camelize = (str) => {
     return str.replace(camelizeRE, (_, c) => (c ? c.toUpperCase() : ''));
@@ -137,9 +131,11 @@ const errorMessages = {
     [46 /* X_V_SLOT_MISPLACED */]: `v-slot can only be used on components or <template> tags.`,
     [47 /* X_V_MODEL_NO_EXPRESSION */]: `v-model is missing expression.`,
     [48 /* X_V_MODEL_MALFORMED_EXPRESSION */]: `v-model value must be a valid JavaScript member expression.`,
+    [49 /* X_V_MODEL_ON_SCOPE_VARIABLE */]: `v-model cannot be used on v-for or v-slot scope variables because they are not writable.`,
+    [50 /* X_INVALID_EXPRESSION */]: `Invalid JavaScript expression.`,
     // generic errors
-    [49 /* X_PREFIX_ID_NOT_SUPPORTED */]: `"prefixIdentifiers" option is not supported in this build of compiler.`,
-    [50 /* X_MODULE_MODE_NOT_SUPPORTED */]: `ES module mode is not supported in this build of compiler.`
+    [51 /* X_PREFIX_ID_NOT_SUPPORTED */]: `"prefixIdentifiers" option is not supported in this build of compiler.`,
+    [52 /* X_MODULE_MODE_NOT_SUPPORTED */]: `ES module mode is not supported in this build of compiler.`
 };
 
 // AST Utilities ---------------------------------------------------------------
@@ -153,30 +149,31 @@ const locStub = {
 };
 function createArrayExpression(elements, loc = locStub) {
     return {
-        type: 15 /* JS_ARRAY_EXPRESSION */,
+        type: 16 /* JS_ARRAY_EXPRESSION */,
         loc,
         elements
     };
 }
 function createObjectExpression(properties, loc = locStub) {
     return {
-        type: 13 /* JS_OBJECT_EXPRESSION */,
+        type: 14 /* JS_OBJECT_EXPRESSION */,
         loc,
         properties
     };
 }
 function createObjectProperty(key, value) {
     return {
-        type: 14 /* JS_PROPERTY */,
+        type: 15 /* JS_PROPERTY */,
         loc: locStub,
         key: isString(key) ? createSimpleExpression(key, true) : key,
         value
     };
 }
-function createSimpleExpression(content, isStatic, loc = locStub) {
+function createSimpleExpression(content, isStatic, loc = locStub, isConstant = false) {
     return {
         type: 4 /* SIMPLE_EXPRESSION */,
         loc,
+        isConstant,
         content,
         isStatic
     };
@@ -199,7 +196,7 @@ function createCompoundExpression(children, loc = locStub) {
 }
 function createCallExpression(callee, args = [], loc = locStub) {
     return {
-        type: 12 /* JS_CALL_EXPRESSION */,
+        type: 13 /* JS_CALL_EXPRESSION */,
         loc,
         callee,
         arguments: args
@@ -207,7 +204,7 @@ function createCallExpression(callee, args = [], loc = locStub) {
 }
 function createFunctionExpression(params, returns, newline = false, loc = locStub) {
     return {
-        type: 16 /* JS_FUNCTION_EXPRESSION */,
+        type: 17 /* JS_FUNCTION_EXPRESSION */,
         params,
         returns,
         newline,
@@ -216,17 +213,25 @@ function createFunctionExpression(params, returns, newline = false, loc = locStu
 }
 function createSequenceExpression(expressions) {
     return {
-        type: 17 /* JS_SEQUENCE_EXPRESSION */,
+        type: 18 /* JS_SEQUENCE_EXPRESSION */,
         expressions,
         loc: locStub
     };
 }
 function createConditionalExpression(test, consequent, alternate) {
     return {
-        type: 18 /* JS_CONDITIONAL_EXPRESSION */,
+        type: 19 /* JS_CONDITIONAL_EXPRESSION */,
         test,
         consequent,
         alternate,
+        loc: locStub
+    };
+}
+function createCacheExpression(index, value) {
+    return {
+        type: 20 /* JS_CACHE_EXPRESSION */,
+        index,
+        value,
         loc: locStub
     };
 }
@@ -240,8 +245,9 @@ const OPEN_BLOCK = Symbol( `openBlock` );
 const CREATE_BLOCK = Symbol( `createBlock` );
 const CREATE_VNODE = Symbol( `createVNode` );
 const RESOLVE_COMPONENT = Symbol( `resolveComponent` );
+const RESOLVE_DYNAMIC_COMPONENT = Symbol( `resolveDynamicComponent` );
 const RESOLVE_DIRECTIVE = Symbol( `resolveDirective` );
-const APPLY_DIRECTIVES = Symbol( `applyDirectives` );
+const WITH_DIRECTIVES = Symbol( `withDirectives` );
 const RENDER_LIST = Symbol( `renderList` );
 const RENDER_SLOT = Symbol( `renderSlot` );
 const CREATE_SLOTS = Symbol( `createSlots` );
@@ -262,8 +268,9 @@ const helperNameMap = {
     [CREATE_BLOCK]: `createBlock`,
     [CREATE_VNODE]: `createVNode`,
     [RESOLVE_COMPONENT]: `resolveComponent`,
+    [RESOLVE_DYNAMIC_COMPONENT]: `resolveDynamicComponent`,
     [RESOLVE_DIRECTIVE]: `resolveDirective`,
-    [APPLY_DIRECTIVES]: `applyDirectives`,
+    [WITH_DIRECTIVES]: `withDirectives`,
     [RENDER_LIST]: `renderList`,
     [RENDER_SLOT]: `renderSlot`,
     [CREATE_SLOTS]: `createSlots`,
@@ -359,15 +366,18 @@ function findDir(node, name, allowEmpty = false) {
         }
     }
 }
-function findProp(node, name) {
+function findProp(node, name, dynamicOnly = false) {
     for (let i = 0; i < node.props.length; i++) {
         const p = node.props[i];
         if (p.type === 6 /* ATTRIBUTE */) {
+            if (dynamicOnly)
+                continue;
             if (p.name === name && p.value && !p.value.isEmpty) {
                 return p;
             }
         }
-        else if (p.arg &&
+        else if (p.name === 'bind' &&
+            p.arg &&
             p.arg.type === 4 /* SIMPLE_EXPRESSION */ &&
             p.arg.isStatic &&
             p.arg.content === name &&
@@ -391,12 +401,12 @@ function injectProp(node, prop, context) {
     if (props == null || isString(props)) {
         propsWithInjection = createObjectExpression([prop]);
     }
-    else if (props.type === 12 /* JS_CALL_EXPRESSION */) {
+    else if (props.type === 13 /* JS_CALL_EXPRESSION */) {
         // merged props... add ours
         // only inject key to object literal if it's the first argument so that
         // if doesn't override user provided keys
         const first = props.arguments[0];
-        if (!isString(first) && first.type === 13 /* JS_OBJECT_EXPRESSION */) {
+        if (!isString(first) && first.type === 14 /* JS_OBJECT_EXPRESSION */) {
             first.properties.unshift(prop);
         }
         else {
@@ -404,7 +414,7 @@ function injectProp(node, prop, context) {
         }
         propsWithInjection = props;
     }
-    else if (props.type === 13 /* JS_OBJECT_EXPRESSION */) {
+    else if (props.type === 14 /* JS_OBJECT_EXPRESSION */) {
         props.properties.unshift(prop);
         propsWithInjection = props;
     }
@@ -428,6 +438,49 @@ function toValidAssetId(name, type) {
 function isEmptyExpression(node) {
     return node.type === 4 /* SIMPLE_EXPRESSION */ && !node.content.trim();
 }
+// Check if a node contains expressions that reference current context scope ids
+function hasScopeRef(node, ids) {
+    if (!node || Object.keys(ids).length === 0) {
+        return false;
+    }
+    switch (node.type) {
+        case 1 /* ELEMENT */:
+            for (let i = 0; i < node.props.length; i++) {
+                const p = node.props[i];
+                if (p.type === 7 /* DIRECTIVE */ &&
+                    (hasScopeRef(p.arg, ids) || hasScopeRef(p.exp, ids))) {
+                    return true;
+                }
+            }
+            return node.children.some(c => hasScopeRef(c, ids));
+        case 11 /* FOR */:
+            if (hasScopeRef(node.source, ids)) {
+                return true;
+            }
+            return node.children.some(c => hasScopeRef(c, ids));
+        case 9 /* IF */:
+            return node.branches.some(b => hasScopeRef(b, ids));
+        case 10 /* IF_BRANCH */:
+            if (hasScopeRef(node.condition, ids)) {
+                return true;
+            }
+            return node.children.some(c => hasScopeRef(c, ids));
+        case 4 /* SIMPLE_EXPRESSION */:
+            return (!node.isStatic &&
+                isSimpleIdentifier(node.content) &&
+                !!ids[node.content]);
+        case 8 /* COMPOUND_EXPRESSION */:
+            return node.children.some(c => isObject(c) && hasScopeRef(c, ids));
+        case 5 /* INTERPOLATION */:
+        case 12 /* TEXT_CALL */:
+            return hasScopeRef(node.content, ids);
+        case 2 /* TEXT */:
+        case 3 /* COMMENT */:
+            return false;
+        default:
+            return false;
+    }
+}
 
 const defaultParserOptions = {
     delimiters: [`{{`, `}}`],
@@ -435,6 +488,7 @@ const defaultParserOptions = {
     getNamespace: () => 0 /* HTML */,
     getTextMode: () => 0 /* DATA */,
     isVoidTag: NO,
+    isCustomElement: NO,
     namedCharacterReferences: {
         'gt;': '>',
         'lt;': '<',
@@ -454,6 +508,7 @@ function parse(content, options = {}) {
         components: [],
         directives: [],
         hoists: [],
+        cached: 0,
         codegenNode: undefined,
         loc: getSelection(context, start)
     };
@@ -730,7 +785,7 @@ function parseTag(context, type, parent) {
         advanceBy(context, isSelfClosing ? 2 : 1);
     }
     let tagType = 0 /* ELEMENT */;
-    if (!context.inPre) {
+    if (!context.inPre && !context.options.isCustomElement(tag)) {
         if (context.options.isNativeTag) {
             if (!context.options.isNativeTag(tag))
                 tagType = 1 /* COMPONENT */;
@@ -743,6 +798,10 @@ function parseTag(context, type, parent) {
             tagType = 2 /* SLOT */;
         else if (tag === 'template')
             tagType = 3 /* TEMPLATE */;
+        else if (tag === 'portal' || tag === 'Portal')
+            tagType = 4 /* PORTAL */;
+        else if (tag === 'suspense' || tag === 'Suspense')
+            tagType = 5 /* SUSPENSE */;
     }
     return {
         type: 1 /* ELEMENT */,
@@ -834,6 +893,7 @@ function parseAttribute(context, nameSet) {
                 type: 4 /* SIMPLE_EXPRESSION */,
                 content,
                 isStatic,
+                isConstant: isStatic,
                 loc
             };
         }
@@ -856,6 +916,9 @@ function parseAttribute(context, nameSet) {
                 type: 4 /* SIMPLE_EXPRESSION */,
                 content: value.content,
                 isStatic: false,
+                // Treat as non-constant by default. This can be potentially set to
+                // true by `transformExpression` to make it eligible for hoisting.
+                isConstant: false,
                 loc: value.loc
             },
             arg,
@@ -935,6 +998,8 @@ function parseInterpolation(context, mode) {
         content: {
             type: 4 /* SIMPLE_EXPRESSION */,
             isStatic: false,
+            // Set `isConstant` to false by default and will decide in transformExpression
+            isConstant: false,
             content,
             loc: getSelection(context, innerStart, innerEnd)
         },
@@ -1176,10 +1241,6 @@ const CCR_REPLACEMENTS = {
     0x9f: 0x0178
 };
 
-function hasDynamicKey(node) {
-    const keyProp = findProp(node, 'key');
-    return keyProp && keyProp.type === 7 /* DIRECTIVE */;
-}
 function hoistStatic(root, context) {
     walk(root.children, context, new Map(), isSingleElementRoot(root, root.children[0]));
 }
@@ -1195,9 +1256,7 @@ function walk(children, context, resultCache, doNotHoistNode = false) {
         // only plain elements are eligible for hoisting.
         if (child.type === 1 /* ELEMENT */ &&
             child.tagType === 0 /* ELEMENT */) {
-            if (!doNotHoistNode &&
-                isStaticNode(child, resultCache) &&
-                !hasDynamicKey(child)) {
+            if (!doNotHoistNode && isStaticNode(child, resultCache)) {
                 // whole tree is static
                 child.codegenNode = context.hoist(child.codegenNode);
                 continue;
@@ -1209,14 +1268,11 @@ function walk(children, context, resultCache, doNotHoistNode = false) {
                 if ((!flag ||
                     flag === 32 /* NEED_PATCH */ ||
                     flag === 1 /* TEXT */) &&
-                    !hasDynamicKey(child)) {
-                    let codegenNode = child.codegenNode;
-                    if (codegenNode.callee === APPLY_DIRECTIVES) {
-                        codegenNode = codegenNode.arguments[0];
-                    }
-                    const props = codegenNode.arguments[1];
+                    !hasDynamicKeyOrRef(child) &&
+                    !hasCachedProps(child)) {
+                    const props = getNodeProps(child);
                     if (props && props !== `null`) {
-                        codegenNode.arguments[1] = context.hoist(props);
+                        getVNodeCall(child).arguments[1] = context.hoist(props);
                     }
                 }
             }
@@ -1237,25 +1293,18 @@ function walk(children, context, resultCache, doNotHoistNode = false) {
         }
     }
 }
-function getPatchFlag(node) {
-    let codegenNode = node.codegenNode;
-    if (codegenNode.callee === APPLY_DIRECTIVES) {
-        codegenNode = codegenNode.arguments[0];
-    }
-    const flag = codegenNode.arguments[3];
-    return flag ? parseInt(flag, 10) : undefined;
-}
-function isStaticNode(node, resultCache) {
+function isStaticNode(node, resultCache = new Map()) {
     switch (node.type) {
         case 1 /* ELEMENT */:
             if (node.tagType !== 0 /* ELEMENT */) {
                 return false;
             }
-            if (resultCache.has(node)) {
-                return resultCache.get(node);
+            const cached = resultCache.get(node);
+            if (cached !== undefined) {
+                return cached;
             }
             const flag = getPatchFlag(node);
-            if (!flag) {
+            if (!flag && !hasDynamicKeyOrRef(node) && !hasCachedProps(node)) {
                 // element self is static. check its children.
                 for (let i = 0; i < node.children.length; i++) {
                     if (!isStaticNode(node.children[i], resultCache)) {
@@ -1267,6 +1316,7 @@ function isStaticNode(node, resultCache) {
                 return true;
             }
             else {
+                resultCache.set(node, false);
                 return false;
             }
         case 2 /* TEXT */:
@@ -1274,21 +1324,63 @@ function isStaticNode(node, resultCache) {
             return true;
         case 9 /* IF */:
         case 11 /* FOR */:
-        case 5 /* INTERPOLATION */:
-        case 8 /* COMPOUND_EXPRESSION */:
             return false;
+        case 5 /* INTERPOLATION */:
+        case 12 /* TEXT_CALL */:
+            return isStaticNode(node.content, resultCache);
+        case 4 /* SIMPLE_EXPRESSION */:
+            return node.isConstant;
+        case 8 /* COMPOUND_EXPRESSION */:
+            return node.children.every(child => {
+                return (isString(child) || isSymbol(child) || isStaticNode(child, resultCache));
+            });
         default:
             return false;
     }
 }
+function hasDynamicKeyOrRef(node) {
+    return !!(findProp(node, 'key', true) || findProp(node, 'ref', true));
+}
+function hasCachedProps(node) {
+    const props = getNodeProps(node);
+    if (props &&
+        props !== 'null' &&
+        props.type === 14 /* JS_OBJECT_EXPRESSION */) {
+        const { properties } = props;
+        for (let i = 0; i < properties.length; i++) {
+            if (properties[i].value.type === 20 /* JS_CACHE_EXPRESSION */) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+function getVNodeCall(node) {
+    let codegenNode = node.codegenNode;
+    if (codegenNode.callee === WITH_DIRECTIVES) {
+        codegenNode = codegenNode.arguments[0];
+    }
+    return codegenNode;
+}
+function getVNodeArgAt(node, index) {
+    return getVNodeCall(node).arguments[index];
+}
+function getPatchFlag(node) {
+    const flag = getVNodeArgAt(node, 3);
+    return flag ? parseInt(flag, 10) : undefined;
+}
+function getNodeProps(node) {
+    return getVNodeArgAt(node, 1);
+}
 
-function createTransformContext(root, { prefixIdentifiers = false, hoistStatic = false, nodeTransforms = [], directiveTransforms = {}, onError = defaultOnError }) {
+function createTransformContext(root, { prefixIdentifiers = false, hoistStatic = false, cacheHandlers = false, nodeTransforms = [], directiveTransforms = {}, onError = defaultOnError }) {
     const context = {
         root,
         helpers: new Set(),
         components: new Set(),
         directives: new Set(),
         hoists: [],
+        cached: 0,
         identifiers: {},
         scopes: {
             vFor: 0,
@@ -1298,6 +1390,7 @@ function createTransformContext(root, { prefixIdentifiers = false, hoistStatic =
         },
         prefixIdentifiers,
         hoistStatic,
+        cacheHandlers,
         nodeTransforms,
         directiveTransforms,
         onError,
@@ -1383,6 +1476,9 @@ function createTransformContext(root, { prefixIdentifiers = false, hoistStatic =
         hoist(exp) {
             context.hoists.push(exp);
             return createSimpleExpression(`_hoisted_${context.hoists.length}`, false, exp.loc);
+        },
+        cache(exp) {
+            return cacheHandlers ? createCacheExpression(++context.cached, exp) : exp;
         }
     };
     function addId(id) {
@@ -1415,7 +1511,7 @@ function finalizeRoot(root, context) {
             // single element root is never hoisted so codegenNode will never be
             // SimpleExpressionNode
             const codegenNode = child.codegenNode;
-            if (codegenNode.callee === APPLY_DIRECTIVES) {
+            if (codegenNode.callee === WITH_DIRECTIVES) {
                 codegenNode.arguments[0].callee = helper(CREATE_BLOCK);
             }
             else {
@@ -1443,6 +1539,7 @@ function finalizeRoot(root, context) {
     root.components = [...context.components];
     root.directives = [...context.directives];
     root.hoists = context.hoists;
+    root.cached = context.cached;
 }
 function traverseChildren(parent, context) {
     let i = 0;
@@ -1655,7 +1752,7 @@ function generate(ast, options = {}) {
             }
         }
         genHoists(ast.hoists, context);
-        context.newline();
+        newline();
         push(`return `);
     }
     else {
@@ -1664,7 +1761,7 @@ function generate(ast, options = {}) {
             push(`import { ${ast.helpers.map(helper).join(', ')} } from "vue"\n`);
         }
         genHoists(ast.hoists, context);
-        context.newline();
+        newline();
         push(`export default `);
     }
     // enter render function
@@ -1685,6 +1782,10 @@ function generate(ast, options = {}) {
     }
     else {
         push(`const _ctx = this`);
+        if (ast.cached > 0) {
+            newline();
+            push(`const _cache = _ctx.$cache`);
+        }
         newline();
     }
     // generate asset resolution statements
@@ -1803,29 +1904,35 @@ function genNode(node, context) {
         case 5 /* INTERPOLATION */:
             genInterpolation(node, context);
             break;
+        case 12 /* TEXT_CALL */:
+            genNode(node.codegenNode, context);
+            break;
         case 8 /* COMPOUND_EXPRESSION */:
             genCompoundExpression(node, context);
             break;
         case 3 /* COMMENT */:
             genComment(node, context);
             break;
-        case 12 /* JS_CALL_EXPRESSION */:
+        case 13 /* JS_CALL_EXPRESSION */:
             genCallExpression(node, context);
             break;
-        case 13 /* JS_OBJECT_EXPRESSION */:
+        case 14 /* JS_OBJECT_EXPRESSION */:
             genObjectExpression(node, context);
             break;
-        case 15 /* JS_ARRAY_EXPRESSION */:
+        case 16 /* JS_ARRAY_EXPRESSION */:
             genArrayExpression(node, context);
             break;
-        case 16 /* JS_FUNCTION_EXPRESSION */:
+        case 17 /* JS_FUNCTION_EXPRESSION */:
             genFunctionExpression(node, context);
             break;
-        case 17 /* JS_SEQUENCE_EXPRESSION */:
+        case 18 /* JS_SEQUENCE_EXPRESSION */:
             genSequenceExpression(node, context);
             break;
-        case 18 /* JS_CONDITIONAL_EXPRESSION */:
+        case 19 /* JS_CONDITIONAL_EXPRESSION */:
             genConditionalExpression(node, context);
+            break;
+        case 20 /* JS_CACHE_EXPRESSION */:
+            genCacheExpression(node, context);
             break;
         /* istanbul ignore next */
         default:
@@ -1975,7 +2082,7 @@ function genConditionalExpression(node, context) {
     context.indentLevel--;
     newline();
     push(`: `);
-    const isNested = alternate.type === 18 /* JS_CONDITIONAL_EXPRESSION */;
+    const isNested = alternate.type === 19 /* JS_CONDITIONAL_EXPRESSION */;
     if (!isNested) {
         context.indentLevel++;
     }
@@ -1990,8 +2097,13 @@ function genSequenceExpression(node, context) {
     genNodeList(node.expressions, context);
     context.push(`)`);
 }
+function genCacheExpression(node, context) {
+    context.push(`_cache[${node.index}] || (_cache[${node.index}] = `);
+    genNode(node.value, context);
+    context.push(`)`);
+}
 
-const literalsWhitelist = new Set([`true`, `false`, `null`, `this`]);
+const isLiteralWhitelisted = /*#__PURE__*/ makeMap('true,false,null,this');
 const transformExpression = (node, context) => {
     if (node.type === 5 /* INTERPOLATION */) {
         node.content = processExpression(node.content, context);
@@ -2025,7 +2137,7 @@ function processExpression(node, context,
 // some expressions like v-slot props & v-for aliases should be parsed as
 // function params
 asParams = false) {
-    if (!context.prefixIdentifiers) {
+    if (!context.prefixIdentifiers || !node.content.trim()) {
         return node;
     }
     // fast path if expression is a simple identifier.
@@ -2033,9 +2145,13 @@ asParams = false) {
     if (isSimpleIdentifier(rawExp)) {
         if (!asParams &&
             !context.identifiers[rawExp] &&
-            !globalsWhitelist.has(rawExp) &&
-            !literalsWhitelist.has(rawExp)) {
+            !isGloballyWhitelisted(rawExp) &&
+            !isLiteralWhitelisted(rawExp)) {
             node.content = `_ctx.${rawExp}`;
+        }
+        else if (!context.identifiers[rawExp]) {
+            // mark node constant for hoisting unless it's referring a scope variable
+            node.isConstant = true;
         }
         return node;
     }
@@ -2047,7 +2163,7 @@ asParams = false) {
         ast = parseJS(source, { ranges: true });
     }
     catch (e) {
-        context.onError(e);
+        context.onError(createCompilerError(50 /* X_INVALID_EXPRESSION */, node.loc));
         return node;
     }
     const ids = [];
@@ -2057,16 +2173,21 @@ asParams = false) {
         enter(node, parent) {
             if (node.type === 'Identifier') {
                 if (!ids.includes(node)) {
-                    if (!knownIds[node.name] && shouldPrefix(node, parent)) {
+                    const needPrefix = shouldPrefix(node, parent);
+                    if (!knownIds[node.name] && needPrefix) {
                         if (isPropertyShorthand(node, parent)) {
                             // property shorthand like { foo }, we need to add the key since we
                             // rewrite the value
                             node.prefix = `${node.name}: `;
                         }
                         node.name = `_ctx.${node.name}`;
+                        node.isConstant = false;
                         ids.push(node);
                     }
                     else if (!isStaticPropertyKey(node, parent)) {
+                        // The identifier is considered constant unless it's pointing to a
+                        // scope variable (a v-for alias, or a v-slot prop)
+                        node.isConstant = !(needPrefix && knownIds[node.name]);
                         // also generate sub-expressions for other identifiers for better
                         // source map support. (except for property keys which are static)
                         ids.push(node);
@@ -2133,7 +2254,7 @@ asParams = false) {
             source,
             start: advancePositionWithClone(node.loc.start, source, start),
             end: advancePositionWithClone(node.loc.start, source, end)
-        }));
+        }, id.isConstant /* isConstant */));
         if (i === ids.length - 1 && end < rawExp.length) {
             children.push(rawExp.slice(end));
         }
@@ -2144,6 +2265,7 @@ asParams = false) {
     }
     else {
         ret = node;
+        ret.isConstant = true;
     }
     ret.identifiers = Object.keys(knownIds);
     return ret;
@@ -2170,7 +2292,7 @@ function shouldPrefix(identifier, parent) {
         // not in an Array destructure pattern
         !(parent.type === 'ArrayPattern') &&
         // skip whitelisted globals
-        !globalsWhitelist.has(identifier.name) &&
+        !isGloballyWhitelisted(identifier.name) &&
         // special case for webpack compilation
         identifier.name !== `require` &&
         // is a special keyword but parsed as identifier
@@ -2239,7 +2361,7 @@ const transformIf = createStructuralDirectiveTransform(/^(if|else|else-if)$/, (n
                     .expressions[1];
                 while (true) {
                     if (parentCondition.alternate.type ===
-                        18 /* JS_CONDITIONAL_EXPRESSION */) {
+                        19 /* JS_CONDITIONAL_EXPRESSION */) {
                         parentCondition = parentCondition.alternate;
                     }
                     else {
@@ -2298,7 +2420,7 @@ function createChildrenCodegenNode(branch, index, context) {
         const childCodegen = child.codegenNode;
         let vnodeCall = childCodegen;
         // Element with custom directives. Locate the actual createVNode() call.
-        if (vnodeCall.callee === APPLY_DIRECTIVES) {
+        if (vnodeCall.callee === WITH_DIRECTIVES) {
             vnodeCall = vnodeCall.arguments[0];
         }
         // Change createVNode to createBlock.
@@ -2334,7 +2456,8 @@ const transformFor = createStructuralDirectiveTransform('for', (node, dir, conte
         ? 64 /* KEYED_FRAGMENT */
         : 128 /* UNKEYED_FRAGMENT */;
     const codegenNode = createSequenceExpression([
-        createCallExpression(helper(OPEN_BLOCK)),
+        // fragment blocks disable tracking since they always diff their children
+        createCallExpression(helper(OPEN_BLOCK), [`false`]),
         createCallExpression(helper(CREATE_BLOCK), [
             helper(FRAGMENT),
             `null`,
@@ -2406,7 +2529,7 @@ const transformFor = createStructuralDirectiveTransform('for', (node, dir, conte
             // Normal element v-for. Directly use the child's codegenNode
             // arguments, but replace createVNode() with createBlock()
             let codegenNode = node.codegenNode;
-            if (codegenNode.callee === APPLY_DIRECTIVES) {
+            if (codegenNode.callee === WITH_DIRECTIVES) {
                 codegenNode.arguments[0].callee = helper(CREATE_BLOCK);
             }
             else {
@@ -2561,9 +2684,12 @@ function buildSlots(node, context) {
     const dynamicSlots = [];
     // If the slot is inside a v-for or another v-slot, force it to be dynamic
     // since it likely uses a scope variable.
-    // TODO: This can be further optimized to only make it dynamic when the slot
-    // actually uses the scope variables.
-    let hasDynamicSlots = context.scopes.vSlot > 1 || context.scopes.vFor > 0;
+    let hasDynamicSlots = context.scopes.vSlot > 0 || context.scopes.vFor > 0;
+    // with `prefixIdentifiers: true`, this can be further optimized to make
+    // it dynamic only when the slot actually uses the scope variables.
+    if ( context.prefixIdentifiers) {
+        hasDynamicSlots = hasScopeRef(node, context.identifiers);
+    }
     // 1. Check for default slot with slotProps on component itself.
     //    <Comp v-slot="{ prop }"/>
     const explicitDefaultSlot = findDir(node, 'slot', true);
@@ -2632,7 +2758,7 @@ function buildSlots(node, context) {
                  assert(dynamicSlots.length > 0);
                 // attach this slot to previous conditional
                 let conditional = dynamicSlots[dynamicSlots.length - 1];
-                while (conditional.alternate.type === 18 /* JS_CONDITIONAL_EXPRESSION */) {
+                while (conditional.alternate.type === 19 /* JS_CONDITIONAL_EXPRESSION */) {
                     conditional = conditional.alternate;
                 }
                 conditional.alternate = vElse.exp
@@ -2705,108 +2831,139 @@ function buildDynamicSlot(name, fn) {
 const directiveImportMap = new WeakMap();
 // generate a JavaScript AST for this element's codegen
 const transformElement = (node, context) => {
-    if (node.type === 1 /* ELEMENT */) {
-        if (node.tagType === 0 /* ELEMENT */ ||
-            node.tagType === 1 /* COMPONENT */ ||
-            // <template> with v-if or v-for are ignored during traversal.
-            // <template> without v-slot should be treated as a normal element.
-            (node.tagType === 3 /* TEMPLATE */ && !node.props.some(isVSlot))) {
-            // perform the work on exit, after all child expressions have been
-            // processed and merged.
-            return () => {
-                const isComponent = node.tagType === 1 /* COMPONENT */;
-                let hasProps = node.props.length > 0;
-                let patchFlag = 0;
-                let runtimeDirectives;
-                let dynamicPropNames;
-                if (isComponent) {
-                    context.helper(RESOLVE_COMPONENT);
-                    context.components.add(node.tag);
-                }
-                const args = [
-                    isComponent ? toValidAssetId(node.tag, `component`) : `"${node.tag}"`
-                ];
-                // props
-                if (hasProps) {
-                    const propsBuildResult = buildProps(node, context);
-                    patchFlag = propsBuildResult.patchFlag;
-                    dynamicPropNames = propsBuildResult.dynamicPropNames;
-                    runtimeDirectives = propsBuildResult.directives;
-                    if (!propsBuildResult.props) {
-                        hasProps = false;
-                    }
-                    else {
-                        args.push(propsBuildResult.props);
+    if (node.type !== 1 /* ELEMENT */ ||
+        // handled by transformSlotOutlet
+        node.tagType === 2 /* SLOT */ ||
+        // <template v-if/v-for> should have already been replaced
+        // <templte v-slot> is handled by buildSlots
+        (node.tagType === 3 /* TEMPLATE */ && node.props.some(isVSlot))) {
+        return;
+    }
+    // perform the work on exit, after all child expressions have been
+    // processed and merged.
+    return () => {
+        const isComponent = node.tagType === 1 /* COMPONENT */;
+        let hasProps = node.props.length > 0;
+        let patchFlag = 0;
+        let runtimeDirectives;
+        let dynamicPropNames;
+        let dynamicComponent;
+        // handle dynamic component
+        const isProp = findProp(node, 'is');
+        if (node.tag === 'component') {
+            if (isProp) {
+                // static <component is="foo" />
+                if (isProp.type === 6 /* ATTRIBUTE */) {
+                    const tag = isProp.value && isProp.value.content;
+                    if (tag) {
+                        context.helper(RESOLVE_COMPONENT);
+                        context.components.add(tag);
+                        dynamicComponent = toValidAssetId(tag, `component`);
                     }
                 }
-                // children
-                const hasChildren = node.children.length > 0;
-                if (hasChildren) {
-                    if (!hasProps) {
-                        args.push(`null`);
-                    }
-                    if (isComponent) {
-                        const { slots, hasDynamicSlots } = buildSlots(node, context);
-                        args.push(slots);
-                        if (hasDynamicSlots) {
-                            patchFlag |= 256 /* DYNAMIC_SLOTS */;
-                        }
-                    }
-                    else if (node.children.length === 1) {
-                        const child = node.children[0];
-                        const type = child.type;
-                        const hasDynamicTextChild = type === 5 /* INTERPOLATION */ ||
-                            type === 8 /* COMPOUND_EXPRESSION */;
-                        if (hasDynamicTextChild) {
-                            patchFlag |= 1 /* TEXT */;
-                        }
-                        // pass directly if the only child is a text node
-                        // (plain / interpolation / expression)
-                        if (hasDynamicTextChild || type === 2 /* TEXT */) {
-                            args.push(child);
-                        }
-                        else {
-                            args.push(node.children);
-                        }
-                    }
-                    else {
-                        args.push(node.children);
-                    }
+                // dynamic <component :is="asdf" />
+                else if (isProp.exp) {
+                    dynamicComponent = createCallExpression(context.helper(RESOLVE_DYNAMIC_COMPONENT), [isProp.exp]);
                 }
-                // patchFlag & dynamicPropNames
-                if (patchFlag !== 0) {
-                    if (!hasChildren) {
-                        if (!hasProps) {
-                            args.push(`null`);
-                        }
-                        args.push(`null`);
-                    }
-                    {
-                        const flagNames = Object.keys(PatchFlagNames)
-                            .map(Number)
-                            .filter(n => n > 0 && patchFlag & n)
-                            .map(n => PatchFlagNames[n])
-                            .join(`, `);
-                        args.push(patchFlag + ` /* ${flagNames} */`);
-                    }
-                    if (dynamicPropNames && dynamicPropNames.length) {
-                        args.push(`[${dynamicPropNames.map(n => JSON.stringify(n)).join(`, `)}]`);
-                    }
+            }
+        }
+        if (isComponent && !dynamicComponent) {
+            context.helper(RESOLVE_COMPONENT);
+            context.components.add(node.tag);
+        }
+        const args = [
+            dynamicComponent
+                ? dynamicComponent
+                : isComponent
+                    ? toValidAssetId(node.tag, `component`)
+                    : node.tagType === 4 /* PORTAL */
+                        ? context.helper(PORTAL)
+                        : node.tagType === 5 /* SUSPENSE */
+                            ? context.helper(SUSPENSE)
+                            : `"${node.tag}"`
+        ];
+        // props
+        if (hasProps) {
+            const propsBuildResult = buildProps(node, context, 
+            // skip reserved "is" prop <component is>
+            node.props.filter(p => p !== isProp));
+            patchFlag = propsBuildResult.patchFlag;
+            dynamicPropNames = propsBuildResult.dynamicPropNames;
+            runtimeDirectives = propsBuildResult.directives;
+            if (!propsBuildResult.props) {
+                hasProps = false;
+            }
+            else {
+                args.push(propsBuildResult.props);
+            }
+        }
+        // children
+        const hasChildren = node.children.length > 0;
+        if (hasChildren) {
+            if (!hasProps) {
+                args.push(`null`);
+            }
+            if (isComponent) {
+                const { slots, hasDynamicSlots } = buildSlots(node, context);
+                args.push(slots);
+                if (hasDynamicSlots) {
+                    patchFlag |= 256 /* DYNAMIC_SLOTS */;
                 }
-                const { loc } = node;
-                const vnode = createCallExpression(context.helper(CREATE_VNODE), args, loc);
-                if (runtimeDirectives && runtimeDirectives.length) {
-                    node.codegenNode = createCallExpression(context.helper(APPLY_DIRECTIVES), [
-                        vnode,
-                        createArrayExpression(runtimeDirectives.map(dir => buildDirectiveArgs(dir, context)), loc)
-                    ], loc);
+            }
+            else if (node.children.length === 1) {
+                const child = node.children[0];
+                const type = child.type;
+                // check for dynamic text children
+                const hasDynamicTextChild = type === 5 /* INTERPOLATION */ ||
+                    type === 8 /* COMPOUND_EXPRESSION */;
+                if (hasDynamicTextChild && !isStaticNode(child)) {
+                    patchFlag |= 1 /* TEXT */;
+                }
+                // pass directly if the only child is a text node
+                // (plain / interpolation / expression)
+                if (hasDynamicTextChild || type === 2 /* TEXT */) {
+                    args.push(child);
                 }
                 else {
-                    node.codegenNode = vnode;
+                    args.push(node.children);
                 }
-            };
+            }
+            else {
+                args.push(node.children);
+            }
         }
-    }
+        // patchFlag & dynamicPropNames
+        if (patchFlag !== 0) {
+            if (!hasChildren) {
+                if (!hasProps) {
+                    args.push(`null`);
+                }
+                args.push(`null`);
+            }
+            {
+                const flagNames = Object.keys(PatchFlagNames)
+                    .map(Number)
+                    .filter(n => n > 0 && patchFlag & n)
+                    .map(n => PatchFlagNames[n])
+                    .join(`, `);
+                args.push(patchFlag + ` /* ${flagNames} */`);
+            }
+            if (dynamicPropNames && dynamicPropNames.length) {
+                args.push(`[${dynamicPropNames.map(n => JSON.stringify(n)).join(`, `)}]`);
+            }
+        }
+        const { loc } = node;
+        const vnode = createCallExpression(context.helper(CREATE_VNODE), args, loc);
+        if (runtimeDirectives && runtimeDirectives.length) {
+            node.codegenNode = createCallExpression(context.helper(WITH_DIRECTIVES), [
+                vnode,
+                createArrayExpression(runtimeDirectives.map(dir => buildDirectiveArgs(dir, context)), loc)
+            ], loc);
+        }
+        else {
+            node.codegenNode = vnode;
+        }
+    };
 };
 function buildProps(node, context, props = node.props) {
     const elementLoc = node.loc;
@@ -2823,20 +2980,24 @@ function buildProps(node, context, props = node.props) {
     const dynamicPropNames = [];
     const analyzePatchFlag = ({ key, value }) => {
         if (key.type === 4 /* SIMPLE_EXPRESSION */ && key.isStatic) {
-            if (value.type !== 4 /* SIMPLE_EXPRESSION */ || !value.isStatic) {
-                const name = key.content;
-                if (name === 'ref') {
-                    hasRef = true;
-                }
-                else if (name === 'class') {
-                    hasClassBinding = true;
-                }
-                else if (name === 'style') {
-                    hasStyleBinding = true;
-                }
-                else if (name !== 'key') {
-                    dynamicPropNames.push(key.content);
-                }
+            if (value.type === 20 /* JS_CACHE_EXPRESSION */ ||
+                ((value.type === 4 /* SIMPLE_EXPRESSION */ ||
+                    value.type === 8 /* COMPOUND_EXPRESSION */) &&
+                    isStaticNode(value))) {
+                return;
+            }
+            const name = key.content;
+            if (name === 'ref') {
+                hasRef = true;
+            }
+            else if (name === 'class') {
+                hasClassBinding = true;
+            }
+            else if (name === 'style') {
+                hasStyleBinding = true;
+            }
+            else if (name !== 'key') {
+                dynamicPropNames.push(name);
             }
         }
         else {
@@ -2879,7 +3040,7 @@ function buildProps(node, context, props = node.props) {
                     else {
                         // v-on="obj" -> toHandlers(obj)
                         mergeArgs.push({
-                            type: 12 /* JS_CALL_EXPRESSION */,
+                            type: 13 /* JS_CALL_EXPRESSION */,
                             loc,
                             callee: context.helper(TO_HANDLERS),
                             arguments: [exp]
@@ -2989,7 +3150,7 @@ function dedupeProperties(properties) {
     return deduped;
 }
 function mergeAsArray(existing, incoming) {
-    if (existing.value.type === 15 /* JS_ARRAY_EXPRESSION */) {
+    if (existing.value.type === 16 /* JS_ARRAY_EXPRESSION */) {
         existing.value.elements.push(incoming.value);
     }
     else {
@@ -3089,12 +3250,8 @@ const transformSlotOutlet = (node, context) => {
 };
 
 const fnExpRE = /^([\w$_]+|\([^)]*?\))\s*=>|^function(?:\s+[\w$]+)?\s*\(/;
-// v-on without arg is handled directly in ./element.ts due to it affecting
-// codegen for the entire props object. This transform here is only for v-on
-// *with* args.
-const transformOn = (dir, node, context) => {
-    const { loc, modifiers } = dir;
-    const arg = dir.arg;
+const transformOn = (dir, node, context, augmentor) => {
+    const { loc, modifiers, arg } = dir;
     if (!dir.exp && !modifiers.length) {
         context.onError(createCompilerError(40 /* X_V_ON_NO_EXPRESSION */, loc));
     }
@@ -3113,21 +3270,35 @@ const transformOn = (dir, node, context) => {
         eventName.children.unshift(`"on" + (`);
         eventName.children.push(`)`);
     }
-    // TODO .once modifier handling since it is platform agnostic
-    // other modifiers are handled in compiler-dom
     // handler processing
-    if (dir.exp) {
-        // exp is guaranteed to be a simple expression here because v-on w/ arg is
-        // skipped by transformExpression as a special case.
-        let exp = dir.exp;
-        const isInlineStatement = !(isMemberExpression(exp.content) || fnExpRE.test(exp.content));
+    let exp = dir.exp;
+    let isCacheable = !exp;
+    if (exp) {
+        const isMemberExp = isMemberExpression(exp.content);
+        const isInlineStatement = !(isMemberExp || fnExpRE.test(exp.content));
         // process the expression since it's been skipped
         if ( context.prefixIdentifiers) {
             context.addIdentifiers(`$event`);
             exp = processExpression(exp, context);
             context.removeIdentifiers(`$event`);
+            // with scope analysis, the function is hoistable if it has no reference
+            // to scope variables.
+            isCacheable =
+                context.cacheHandlers && !hasScopeRef(exp, context.identifiers);
+            // If the expression is optimizable and is a member expression pointing
+            // to a function, turn it into invocation (and wrap in an arrow function
+            // below) so that it always accesses the latest value when called - thus
+            // avoiding the need to be patched.
+            if (isCacheable && isMemberExp) {
+                if (exp.type === 4 /* SIMPLE_EXPRESSION */) {
+                    exp.content += `($event)`;
+                }
+                else {
+                    exp.children.push(`($event)`);
+                }
+            }
         }
-        if (isInlineStatement) {
+        if (isInlineStatement || (isCacheable && isMemberExp)) {
             // wrap inline statement in a function expression
             exp = createCompoundExpression([
                 `$event => (`,
@@ -3135,14 +3306,24 @@ const transformOn = (dir, node, context) => {
                 `)`
             ]);
         }
-        dir.exp = exp;
     }
-    return {
+    let ret = {
         props: [
-            createObjectProperty(eventName, dir.exp || createSimpleExpression(`() => {}`, false, loc))
+            createObjectProperty(eventName, exp || createSimpleExpression(`() => {}`, false, loc))
         ],
         needRuntime: false
     };
+    // apply extended compiler augmentor
+    if (augmentor) {
+        ret = augmentor(ret);
+    }
+    if (isCacheable) {
+        // cache handlers so that it's always the same handler being passed down.
+        // this avoids unnecessary re-renders when users use inline hanlders on
+        // components.
+        ret.props[0].value = context.cache(ret.props[0].value);
+    }
+    return ret;
 };
 
 // v-bind without arg is handled directly in ./element.ts due to it affecting
@@ -3181,16 +3362,18 @@ const transformBind = (dir, node, context) => {
 const isText$1 = (node) => node.type === 5 /* INTERPOLATION */ || node.type === 2 /* TEXT */;
 // Merge adjacent text nodes and expressions into a single expression
 // e.g. <div>abc {{ d }} {{ e }}</div> should have a single expression node as child.
-const optimizeText = node => {
+const transformText = (node, context) => {
     if (node.type === 0 /* ROOT */ || node.type === 1 /* ELEMENT */) {
         // perform the transform on node exit so that all expressions have already
         // been processed.
         return () => {
             const children = node.children;
             let currentContainer = undefined;
+            let hasText = false;
             for (let i = 0; i < children.length; i++) {
                 const child = children[i];
                 if (isText$1(child)) {
+                    hasText = true;
                     for (let j = i + 1; j < children.length; j++) {
                         const next = children[j];
                         if (isText$1(next)) {
@@ -3210,6 +3393,25 @@ const optimizeText = node => {
                             currentContainer = undefined;
                             break;
                         }
+                    }
+                }
+            }
+            if (hasText && children.length > 1) {
+                // when an element has mixed text/element children, convert text nodes
+                // into createVNode(Text) calls.
+                for (let i = 0; i < children.length; i++) {
+                    const child = children[i];
+                    if (isText$1(child) || child.type === 8 /* COMPOUND_EXPRESSION */) {
+                        const callArgs = [context.helper(TEXT), `null`, child];
+                        if (child.type !== 2 /* TEXT */) {
+                            callArgs.push(`${1 /* TEXT */} /* ${PatchFlagNames[1 /* TEXT */]} */`);
+                        }
+                        children[i] = {
+                            type: 12 /* TEXT_CALL */,
+                            content: child,
+                            loc: child.loc,
+                            codegenNode: createCallExpression(context.helper(CREATE_VNODE), callArgs)
+                        };
                     }
                 }
             }
@@ -3237,6 +3439,13 @@ const transformModel = (dir, node, context) => {
         context.onError(createCompilerError(48 /* X_V_MODEL_MALFORMED_EXPRESSION */, exp.loc));
         return createTransformProps();
     }
+    if (
+        context.prefixIdentifiers &&
+        isSimpleIdentifier(expString) &&
+        context.identifiers[expString]) {
+        context.onError(createCompilerError(49 /* X_V_MODEL_ON_SCOPE_VARIABLE */, exp.loc));
+        return createTransformProps();
+    }
     const propName = arg ? arg : createSimpleExpression('modelValue', true);
     const eventName = arg
         ? arg.type === 4 /* SIMPLE_EXPRESSION */ && arg.isStatic
@@ -3248,18 +3457,65 @@ const transformModel = (dir, node, context) => {
             ])
         : createSimpleExpression('onUpdate:modelValue', true);
     const props = [
+        // modelValue: foo
         createObjectProperty(propName, dir.exp),
+        // "onUpdate:modelValue": $event => (foo = $event)
         createObjectProperty(eventName, createCompoundExpression([
             `$event => (`,
             ...(exp.type === 4 /* SIMPLE_EXPRESSION */ ? [exp] : exp.children),
             ` = $event)`
         ]))
     ];
-    if (dir.modifiers.length) ;
+    // cache v-model handler if applicable (when it doesn't refer any scope vars)
+    if (
+        context.prefixIdentifiers &&
+        !hasScopeRef(exp, context.identifiers)) {
+        props[1].value = context.cache(props[1].value);
+    }
+    // modelModifiers: { foo: true, "bar-baz": true }
+    if (dir.modifiers.length && node.tagType === 1 /* COMPONENT */) {
+        const modifiers = dir.modifiers
+            .map(m => (isSimpleIdentifier(m) ? m : JSON.stringify(m)) + `: true`)
+            .join(`, `);
+        props.push(createObjectProperty(`modelModifiers`, createSimpleExpression(`{ ${modifiers} }`, false, dir.loc, true)));
+    }
     return createTransformProps(props);
 };
 function createTransformProps(props = []) {
     return { props, needRuntime: false };
+}
+
+const range = 2;
+function generateCodeFrame(source, start = 0, end = source.length) {
+    const lines = source.split(/\r?\n/);
+    let count = 0;
+    const res = [];
+    for (let i = 0; i < lines.length; i++) {
+        count += lines[i].length + 1;
+        if (count >= start) {
+            for (let j = i - range; j <= i + range || end > count; j++) {
+                if (j < 0 || j >= lines.length)
+                    continue;
+                res.push(`${j + 1}${' '.repeat(3 - String(j + 1).length)}|  ${lines[j]}`);
+                const lineLength = lines[j].length;
+                if (j === i) {
+                    // push underline
+                    const pad = start - (count - lineLength) + 1;
+                    const length = end > count ? lineLength - pad : end - start;
+                    res.push(`   |  ` + ' '.repeat(pad) + '^'.repeat(length));
+                }
+                else if (j > i) {
+                    if (end > count) {
+                        const length = Math.min(end - count, lineLength);
+                        res.push(`   |  ` + '^'.repeat(length));
+                    }
+                    count += lineLength + 1;
+                }
+            }
+            break;
+        }
+    }
+    return res.join('\n');
 }
 
 // we name it `baseCompile` so that higher order compilers like @vue/compiler-dom
@@ -3281,10 +3537,10 @@ function baseCompile(template, options = {}) {
                     transformExpression
                 ]
                 : []),
-            trackSlotScopes,
             transformSlotOutlet,
             transformElement,
-            optimizeText,
+            trackSlotScopes,
+            transformText,
             ...(options.nodeTransforms || []) // user transforms
         ],
         directiveTransforms: {
@@ -3307,6 +3563,7 @@ exports.assert = assert;
 exports.baseCompile = baseCompile;
 exports.createArrayExpression = createArrayExpression;
 exports.createBlockExpression = createBlockExpression;
+exports.createCacheExpression = createCacheExpression;
 exports.createCallExpression = createCallExpression;
 exports.createCompilerError = createCompilerError;
 exports.createCompoundExpression = createCompoundExpression;
@@ -3321,7 +3578,9 @@ exports.createStructuralDirectiveTransform = createStructuralDirectiveTransform;
 exports.findDir = findDir;
 exports.findProp = findProp;
 exports.generate = generate;
+exports.generateCodeFrame = generateCodeFrame;
 exports.getInnerRange = getInnerRange;
+exports.hasScopeRef = hasScopeRef;
 exports.injectProp = injectProp;
 exports.isEmptyExpression = isEmptyExpression;
 exports.isMemberExpression = isMemberExpression;

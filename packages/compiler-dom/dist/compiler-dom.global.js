@@ -16,179 +16,19 @@ var VueDOMCompiler = (function (exports) {
       [-1 /* BAIL */]: `BAIL`
   };
 
-  const HTMLTagSet = new Set([
-      'html',
-      'body',
-      'base',
-      'head',
-      'link',
-      'meta',
-      'style',
-      'title',
-      'address',
-      'article',
-      'aside',
-      'footer',
-      'header',
-      'h1',
-      'h2',
-      'h3',
-      'h4',
-      'h5',
-      'h6',
-      'hgroup',
-      'nav',
-      'section',
-      'div',
-      'dd',
-      'dl',
-      'dt',
-      'figcaption',
-      'figure',
-      'picture',
-      'hr',
-      'img',
-      'li',
-      'main',
-      'ol',
-      'p',
-      'pre',
-      'ul',
-      'a',
-      'b',
-      'abbr',
-      'bdi',
-      'bdo',
-      'br',
-      'cite',
-      'code',
-      'data',
-      'dfn',
-      'em',
-      'i',
-      'kbd',
-      'mark',
-      'q',
-      'rp',
-      'rt',
-      'rtc',
-      'ruby',
-      's',
-      'samp',
-      'small',
-      'span',
-      'strong',
-      'sub',
-      'sup',
-      'time',
-      'u',
-      'var',
-      'wbr',
-      'area',
-      'audio',
-      'map',
-      'track',
-      'video',
-      'embed',
-      'object',
-      'param',
-      'source',
-      'canvas',
-      'script',
-      'noscript',
-      'del',
-      'ins',
-      'caption',
-      'col',
-      'colgroup',
-      'table',
-      'thead',
-      'tbody',
-      'td',
-      'th',
-      'tr',
-      'button',
-      'datalist',
-      'fieldset',
-      'form',
-      'input',
-      'label',
-      'legend',
-      'meter',
-      'optgroup',
-      'option',
-      'output',
-      'progress',
-      'select',
-      'textarea',
-      'details',
-      'dialog',
-      'menu',
-      'menuitem',
-      'summary',
-      'content',
-      'element',
-      'shadow',
-      'template',
-      'blockquote',
-      'iframe',
-      'tfoot'
-  ]);
-  /**
-   * this list is intentionally selective, only covering SVG elements that may
-   * contain child elements.
-   */
-  const SVGTagSet = new Set([
-      'svg',
-      'animate',
-      'circle',
-      'clippath',
-      'cursor',
-      'defs',
-      'desc',
-      'ellipse',
-      'filter',
-      'font-face',
-      'foreignObject',
-      'g',
-      'glyph',
-      'image',
-      'line',
-      'marker',
-      'mask',
-      'missing-glyph',
-      'path',
-      'pattern',
-      'polygon',
-      'polyline',
-      'rect',
-      'switch',
-      'symbol',
-      'text',
-      'textpath',
-      'tspan',
-      'use',
-      'view'
-  ]);
-  const VoidTagSet = new Set([
-      'area',
-      'base',
-      'br',
-      'col',
-      'embed',
-      'hr',
-      'img',
-      'input',
-      'link',
-      'meta',
-      'param',
-      'source',
-      'track',
-      'wbr'
-  ]);
-  const isVoidTag = (tag) => VoidTagSet.has(tag);
-  const isHTMLTag = (tag) => HTMLTagSet.has(tag);
-  const isSVGTag = (tag) => SVGTagSet.has(tag);
+  // Make a map and return a function for checking if a key
+  // is in that map.
+  //
+  // IMPORTANT: all calls of this function must be prefixed with /*#__PURE__*/
+  // So that rollup can tree-shake them if necessary.
+  function makeMap(str, expectsLowerCase) {
+      const map = Object.create(null);
+      const list = str.split(',');
+      for (let i = 0; i < list.length; i++) {
+          map[list[i]] = true;
+      }
+      return expectsLowerCase ? val => !!map[val.toLowerCase()] : val => !!map[val];
+  }
 
   const EMPTY_OBJ =  Object.freeze({})
       ;
@@ -206,6 +46,7 @@ var VueDOMCompiler = (function (exports) {
   const isFunction = (val) => typeof val === 'function';
   const isString = (val) => typeof val === 'string';
   const isSymbol = (val) => typeof val === 'symbol';
+  const isObject = (val) => val !== null && typeof val === 'object';
   const camelizeRE = /-(\w)/g;
   const camelize = (str) => {
       return str.replace(camelizeRE, (_, c) => (c ? c.toUpperCase() : ''));
@@ -282,9 +123,11 @@ var VueDOMCompiler = (function (exports) {
       [46 /* X_V_SLOT_MISPLACED */]: `v-slot can only be used on components or <template> tags.`,
       [47 /* X_V_MODEL_NO_EXPRESSION */]: `v-model is missing expression.`,
       [48 /* X_V_MODEL_MALFORMED_EXPRESSION */]: `v-model value must be a valid JavaScript member expression.`,
+      [49 /* X_V_MODEL_ON_SCOPE_VARIABLE */]: `v-model cannot be used on v-for or v-slot scope variables because they are not writable.`,
+      [50 /* X_INVALID_EXPRESSION */]: `Invalid JavaScript expression.`,
       // generic errors
-      [49 /* X_PREFIX_ID_NOT_SUPPORTED */]: `"prefixIdentifiers" option is not supported in this build of compiler.`,
-      [50 /* X_MODULE_MODE_NOT_SUPPORTED */]: `ES module mode is not supported in this build of compiler.`
+      [51 /* X_PREFIX_ID_NOT_SUPPORTED */]: `"prefixIdentifiers" option is not supported in this build of compiler.`,
+      [52 /* X_MODULE_MODE_NOT_SUPPORTED */]: `ES module mode is not supported in this build of compiler.`
   };
 
   // AST Utilities ---------------------------------------------------------------
@@ -298,30 +141,31 @@ var VueDOMCompiler = (function (exports) {
   };
   function createArrayExpression(elements, loc = locStub) {
       return {
-          type: 15 /* JS_ARRAY_EXPRESSION */,
+          type: 16 /* JS_ARRAY_EXPRESSION */,
           loc,
           elements
       };
   }
   function createObjectExpression(properties, loc = locStub) {
       return {
-          type: 13 /* JS_OBJECT_EXPRESSION */,
+          type: 14 /* JS_OBJECT_EXPRESSION */,
           loc,
           properties
       };
   }
   function createObjectProperty(key, value) {
       return {
-          type: 14 /* JS_PROPERTY */,
+          type: 15 /* JS_PROPERTY */,
           loc: locStub,
           key: isString(key) ? createSimpleExpression(key, true) : key,
           value
       };
   }
-  function createSimpleExpression(content, isStatic, loc = locStub) {
+  function createSimpleExpression(content, isStatic, loc = locStub, isConstant = false) {
       return {
           type: 4 /* SIMPLE_EXPRESSION */,
           loc,
+          isConstant,
           content,
           isStatic
       };
@@ -344,7 +188,7 @@ var VueDOMCompiler = (function (exports) {
   }
   function createCallExpression(callee, args = [], loc = locStub) {
       return {
-          type: 12 /* JS_CALL_EXPRESSION */,
+          type: 13 /* JS_CALL_EXPRESSION */,
           loc,
           callee,
           arguments: args
@@ -352,7 +196,7 @@ var VueDOMCompiler = (function (exports) {
   }
   function createFunctionExpression(params, returns, newline = false, loc = locStub) {
       return {
-          type: 16 /* JS_FUNCTION_EXPRESSION */,
+          type: 17 /* JS_FUNCTION_EXPRESSION */,
           params,
           returns,
           newline,
@@ -361,17 +205,25 @@ var VueDOMCompiler = (function (exports) {
   }
   function createSequenceExpression(expressions) {
       return {
-          type: 17 /* JS_SEQUENCE_EXPRESSION */,
+          type: 18 /* JS_SEQUENCE_EXPRESSION */,
           expressions,
           loc: locStub
       };
   }
   function createConditionalExpression(test, consequent, alternate) {
       return {
-          type: 18 /* JS_CONDITIONAL_EXPRESSION */,
+          type: 19 /* JS_CONDITIONAL_EXPRESSION */,
           test,
           consequent,
           alternate,
+          loc: locStub
+      };
+  }
+  function createCacheExpression(index, value) {
+      return {
+          type: 20 /* JS_CACHE_EXPRESSION */,
+          index,
+          value,
           loc: locStub
       };
   }
@@ -385,8 +237,9 @@ var VueDOMCompiler = (function (exports) {
   const CREATE_BLOCK = Symbol( `createBlock` );
   const CREATE_VNODE = Symbol( `createVNode` );
   const RESOLVE_COMPONENT = Symbol( `resolveComponent` );
+  const RESOLVE_DYNAMIC_COMPONENT = Symbol( `resolveDynamicComponent` );
   const RESOLVE_DIRECTIVE = Symbol( `resolveDirective` );
-  const APPLY_DIRECTIVES = Symbol( `applyDirectives` );
+  const WITH_DIRECTIVES = Symbol( `withDirectives` );
   const RENDER_LIST = Symbol( `renderList` );
   const RENDER_SLOT = Symbol( `renderSlot` );
   const CREATE_SLOTS = Symbol( `createSlots` );
@@ -407,8 +260,9 @@ var VueDOMCompiler = (function (exports) {
       [CREATE_BLOCK]: `createBlock`,
       [CREATE_VNODE]: `createVNode`,
       [RESOLVE_COMPONENT]: `resolveComponent`,
+      [RESOLVE_DYNAMIC_COMPONENT]: `resolveDynamicComponent`,
       [RESOLVE_DIRECTIVE]: `resolveDirective`,
-      [APPLY_DIRECTIVES]: `applyDirectives`,
+      [WITH_DIRECTIVES]: `withDirectives`,
       [RENDER_LIST]: `renderList`,
       [RENDER_SLOT]: `renderSlot`,
       [CREATE_SLOTS]: `createSlots`,
@@ -504,15 +358,18 @@ var VueDOMCompiler = (function (exports) {
           }
       }
   }
-  function findProp(node, name) {
+  function findProp(node, name, dynamicOnly = false) {
       for (let i = 0; i < node.props.length; i++) {
           const p = node.props[i];
           if (p.type === 6 /* ATTRIBUTE */) {
+              if (dynamicOnly)
+                  continue;
               if (p.name === name && p.value && !p.value.isEmpty) {
                   return p;
               }
           }
-          else if (p.arg &&
+          else if (p.name === 'bind' &&
+              p.arg &&
               p.arg.type === 4 /* SIMPLE_EXPRESSION */ &&
               p.arg.isStatic &&
               p.arg.content === name &&
@@ -536,12 +393,12 @@ var VueDOMCompiler = (function (exports) {
       if (props == null || isString(props)) {
           propsWithInjection = createObjectExpression([prop]);
       }
-      else if (props.type === 12 /* JS_CALL_EXPRESSION */) {
+      else if (props.type === 13 /* JS_CALL_EXPRESSION */) {
           // merged props... add ours
           // only inject key to object literal if it's the first argument so that
           // if doesn't override user provided keys
           const first = props.arguments[0];
-          if (!isString(first) && first.type === 13 /* JS_OBJECT_EXPRESSION */) {
+          if (!isString(first) && first.type === 14 /* JS_OBJECT_EXPRESSION */) {
               first.properties.unshift(prop);
           }
           else {
@@ -549,7 +406,7 @@ var VueDOMCompiler = (function (exports) {
           }
           propsWithInjection = props;
       }
-      else if (props.type === 13 /* JS_OBJECT_EXPRESSION */) {
+      else if (props.type === 14 /* JS_OBJECT_EXPRESSION */) {
           props.properties.unshift(prop);
           propsWithInjection = props;
       }
@@ -573,6 +430,49 @@ var VueDOMCompiler = (function (exports) {
   function isEmptyExpression(node) {
       return node.type === 4 /* SIMPLE_EXPRESSION */ && !node.content.trim();
   }
+  // Check if a node contains expressions that reference current context scope ids
+  function hasScopeRef(node, ids) {
+      if (!node || Object.keys(ids).length === 0) {
+          return false;
+      }
+      switch (node.type) {
+          case 1 /* ELEMENT */:
+              for (let i = 0; i < node.props.length; i++) {
+                  const p = node.props[i];
+                  if (p.type === 7 /* DIRECTIVE */ &&
+                      (hasScopeRef(p.arg, ids) || hasScopeRef(p.exp, ids))) {
+                      return true;
+                  }
+              }
+              return node.children.some(c => hasScopeRef(c, ids));
+          case 11 /* FOR */:
+              if (hasScopeRef(node.source, ids)) {
+                  return true;
+              }
+              return node.children.some(c => hasScopeRef(c, ids));
+          case 9 /* IF */:
+              return node.branches.some(b => hasScopeRef(b, ids));
+          case 10 /* IF_BRANCH */:
+              if (hasScopeRef(node.condition, ids)) {
+                  return true;
+              }
+              return node.children.some(c => hasScopeRef(c, ids));
+          case 4 /* SIMPLE_EXPRESSION */:
+              return (!node.isStatic &&
+                  isSimpleIdentifier(node.content) &&
+                  !!ids[node.content]);
+          case 8 /* COMPOUND_EXPRESSION */:
+              return node.children.some(c => isObject(c) && hasScopeRef(c, ids));
+          case 5 /* INTERPOLATION */:
+          case 12 /* TEXT_CALL */:
+              return hasScopeRef(node.content, ids);
+          case 2 /* TEXT */:
+          case 3 /* COMMENT */:
+              return false;
+          default:
+              return false;
+      }
+  }
 
   const defaultParserOptions = {
       delimiters: [`{{`, `}}`],
@@ -580,6 +480,7 @@ var VueDOMCompiler = (function (exports) {
       getNamespace: () => 0 /* HTML */,
       getTextMode: () => 0 /* DATA */,
       isVoidTag: NO,
+      isCustomElement: NO,
       namedCharacterReferences: {
           'gt;': '>',
           'lt;': '<',
@@ -599,6 +500,7 @@ var VueDOMCompiler = (function (exports) {
           components: [],
           directives: [],
           hoists: [],
+          cached: 0,
           codegenNode: undefined,
           loc: getSelection(context, start)
       };
@@ -875,7 +777,7 @@ var VueDOMCompiler = (function (exports) {
           advanceBy(context, isSelfClosing ? 2 : 1);
       }
       let tagType = 0 /* ELEMENT */;
-      if (!context.inPre) {
+      if (!context.inPre && !context.options.isCustomElement(tag)) {
           if (context.options.isNativeTag) {
               if (!context.options.isNativeTag(tag))
                   tagType = 1 /* COMPONENT */;
@@ -888,6 +790,10 @@ var VueDOMCompiler = (function (exports) {
               tagType = 2 /* SLOT */;
           else if (tag === 'template')
               tagType = 3 /* TEMPLATE */;
+          else if (tag === 'portal' || tag === 'Portal')
+              tagType = 4 /* PORTAL */;
+          else if (tag === 'suspense' || tag === 'Suspense')
+              tagType = 5 /* SUSPENSE */;
       }
       return {
           type: 1 /* ELEMENT */,
@@ -979,6 +885,7 @@ var VueDOMCompiler = (function (exports) {
                   type: 4 /* SIMPLE_EXPRESSION */,
                   content,
                   isStatic,
+                  isConstant: isStatic,
                   loc
               };
           }
@@ -1001,6 +908,9 @@ var VueDOMCompiler = (function (exports) {
                   type: 4 /* SIMPLE_EXPRESSION */,
                   content: value.content,
                   isStatic: false,
+                  // Treat as non-constant by default. This can be potentially set to
+                  // true by `transformExpression` to make it eligible for hoisting.
+                  isConstant: false,
                   loc: value.loc
               },
               arg,
@@ -1080,6 +990,8 @@ var VueDOMCompiler = (function (exports) {
           content: {
               type: 4 /* SIMPLE_EXPRESSION */,
               isStatic: false,
+              // Set `isConstant` to false by default and will decide in transformExpression
+              isConstant: false,
               content,
               loc: getSelection(context, innerStart, innerEnd)
           },
@@ -1321,10 +1233,6 @@ var VueDOMCompiler = (function (exports) {
       0x9f: 0x0178
   };
 
-  function hasDynamicKey(node) {
-      const keyProp = findProp(node, 'key');
-      return keyProp && keyProp.type === 7 /* DIRECTIVE */;
-  }
   function hoistStatic(root, context) {
       walk(root.children, context, new Map(), isSingleElementRoot(root, root.children[0]));
   }
@@ -1340,9 +1248,7 @@ var VueDOMCompiler = (function (exports) {
           // only plain elements are eligible for hoisting.
           if (child.type === 1 /* ELEMENT */ &&
               child.tagType === 0 /* ELEMENT */) {
-              if (!doNotHoistNode &&
-                  isStaticNode(child, resultCache) &&
-                  !hasDynamicKey(child)) {
+              if (!doNotHoistNode && isStaticNode(child, resultCache)) {
                   // whole tree is static
                   child.codegenNode = context.hoist(child.codegenNode);
                   continue;
@@ -1354,14 +1260,11 @@ var VueDOMCompiler = (function (exports) {
                   if ((!flag ||
                       flag === 32 /* NEED_PATCH */ ||
                       flag === 1 /* TEXT */) &&
-                      !hasDynamicKey(child)) {
-                      let codegenNode = child.codegenNode;
-                      if (codegenNode.callee === APPLY_DIRECTIVES) {
-                          codegenNode = codegenNode.arguments[0];
-                      }
-                      const props = codegenNode.arguments[1];
+                      !hasDynamicKeyOrRef(child) &&
+                      !hasCachedProps(child)) {
+                      const props = getNodeProps(child);
                       if (props && props !== `null`) {
-                          codegenNode.arguments[1] = context.hoist(props);
+                          getVNodeCall(child).arguments[1] = context.hoist(props);
                       }
                   }
               }
@@ -1382,25 +1285,18 @@ var VueDOMCompiler = (function (exports) {
           }
       }
   }
-  function getPatchFlag(node) {
-      let codegenNode = node.codegenNode;
-      if (codegenNode.callee === APPLY_DIRECTIVES) {
-          codegenNode = codegenNode.arguments[0];
-      }
-      const flag = codegenNode.arguments[3];
-      return flag ? parseInt(flag, 10) : undefined;
-  }
-  function isStaticNode(node, resultCache) {
+  function isStaticNode(node, resultCache = new Map()) {
       switch (node.type) {
           case 1 /* ELEMENT */:
               if (node.tagType !== 0 /* ELEMENT */) {
                   return false;
               }
-              if (resultCache.has(node)) {
-                  return resultCache.get(node);
+              const cached = resultCache.get(node);
+              if (cached !== undefined) {
+                  return cached;
               }
               const flag = getPatchFlag(node);
-              if (!flag) {
+              if (!flag && !hasDynamicKeyOrRef(node) && !hasCachedProps(node)) {
                   // element self is static. check its children.
                   for (let i = 0; i < node.children.length; i++) {
                       if (!isStaticNode(node.children[i], resultCache)) {
@@ -1412,6 +1308,7 @@ var VueDOMCompiler = (function (exports) {
                   return true;
               }
               else {
+                  resultCache.set(node, false);
                   return false;
               }
           case 2 /* TEXT */:
@@ -1419,21 +1316,66 @@ var VueDOMCompiler = (function (exports) {
               return true;
           case 9 /* IF */:
           case 11 /* FOR */:
-          case 5 /* INTERPOLATION */:
-          case 8 /* COMPOUND_EXPRESSION */:
               return false;
+          case 5 /* INTERPOLATION */:
+          case 12 /* TEXT_CALL */:
+              return isStaticNode(node.content, resultCache);
+          case 4 /* SIMPLE_EXPRESSION */:
+              return node.isConstant;
+          case 8 /* COMPOUND_EXPRESSION */:
+              return node.children.every(child => {
+                  return (isString(child) || isSymbol(child) || isStaticNode(child, resultCache));
+              });
           default:
               return false;
       }
   }
+  function hasDynamicKeyOrRef(node) {
+      return !!(findProp(node, 'key', true) || findProp(node, 'ref', true));
+  }
+  function hasCachedProps(node) {
+      {
+          return false;
+      }
+      const props = getNodeProps(node);
+      if (props &&
+          props !== 'null' &&
+          props.type === 14 /* JS_OBJECT_EXPRESSION */) {
+          const { properties } = props;
+          for (let i = 0; i < properties.length; i++) {
+              if (properties[i].value.type === 20 /* JS_CACHE_EXPRESSION */) {
+                  return true;
+              }
+          }
+      }
+      return false;
+  }
+  function getVNodeCall(node) {
+      let codegenNode = node.codegenNode;
+      if (codegenNode.callee === WITH_DIRECTIVES) {
+          codegenNode = codegenNode.arguments[0];
+      }
+      return codegenNode;
+  }
+  function getVNodeArgAt(node, index) {
+      return getVNodeCall(node).arguments[index];
+  }
+  function getPatchFlag(node) {
+      const flag = getVNodeArgAt(node, 3);
+      return flag ? parseInt(flag, 10) : undefined;
+  }
+  function getNodeProps(node) {
+      return getVNodeArgAt(node, 1);
+  }
 
-  function createTransformContext(root, { prefixIdentifiers = false, hoistStatic = false, nodeTransforms = [], directiveTransforms = {}, onError = defaultOnError }) {
+  function createTransformContext(root, { prefixIdentifiers = false, hoistStatic = false, cacheHandlers = false, nodeTransforms = [], directiveTransforms = {}, onError = defaultOnError }) {
       const context = {
           root,
           helpers: new Set(),
           components: new Set(),
           directives: new Set(),
           hoists: [],
+          cached: 0,
           identifiers: {},
           scopes: {
               vFor: 0,
@@ -1443,6 +1385,7 @@ var VueDOMCompiler = (function (exports) {
           },
           prefixIdentifiers,
           hoistStatic,
+          cacheHandlers,
           nodeTransforms,
           directiveTransforms,
           onError,
@@ -1505,6 +1448,9 @@ var VueDOMCompiler = (function (exports) {
           hoist(exp) {
               context.hoists.push(exp);
               return createSimpleExpression(`_hoisted_${context.hoists.length}`, false, exp.loc);
+          },
+          cache(exp) {
+              return cacheHandlers ? createCacheExpression(++context.cached, exp) : exp;
           }
       };
       return context;
@@ -1527,7 +1473,7 @@ var VueDOMCompiler = (function (exports) {
               // single element root is never hoisted so codegenNode will never be
               // SimpleExpressionNode
               const codegenNode = child.codegenNode;
-              if (codegenNode.callee === APPLY_DIRECTIVES) {
+              if (codegenNode.callee === WITH_DIRECTIVES) {
                   codegenNode.arguments[0].callee = helper(CREATE_BLOCK);
               }
               else {
@@ -1555,6 +1501,7 @@ var VueDOMCompiler = (function (exports) {
       root.components = [...context.components];
       root.directives = [...context.directives];
       root.hoists = context.hoists;
+      root.cached = context.cached;
   }
   function traverseChildren(parent, context) {
       let i = 0;
@@ -1730,7 +1677,7 @@ var VueDOMCompiler = (function (exports) {
               }
           }
           genHoists(ast.hoists, context);
-          context.newline();
+          newline();
           push(`return `);
       }
       else {
@@ -1739,7 +1686,7 @@ var VueDOMCompiler = (function (exports) {
               push(`import { ${ast.helpers.map(helper).join(', ')} } from "vue"\n`);
           }
           genHoists(ast.hoists, context);
-          context.newline();
+          newline();
           push(`export default `);
       }
       // enter render function
@@ -1760,6 +1707,10 @@ var VueDOMCompiler = (function (exports) {
       }
       else {
           push(`const _ctx = this`);
+          if (ast.cached > 0) {
+              newline();
+              push(`const _cache = _ctx.$cache`);
+          }
           newline();
       }
       // generate asset resolution statements
@@ -1878,29 +1829,35 @@ var VueDOMCompiler = (function (exports) {
           case 5 /* INTERPOLATION */:
               genInterpolation(node, context);
               break;
+          case 12 /* TEXT_CALL */:
+              genNode(node.codegenNode, context);
+              break;
           case 8 /* COMPOUND_EXPRESSION */:
               genCompoundExpression(node, context);
               break;
           case 3 /* COMMENT */:
               genComment(node, context);
               break;
-          case 12 /* JS_CALL_EXPRESSION */:
+          case 13 /* JS_CALL_EXPRESSION */:
               genCallExpression(node, context);
               break;
-          case 13 /* JS_OBJECT_EXPRESSION */:
+          case 14 /* JS_OBJECT_EXPRESSION */:
               genObjectExpression(node, context);
               break;
-          case 15 /* JS_ARRAY_EXPRESSION */:
+          case 16 /* JS_ARRAY_EXPRESSION */:
               genArrayExpression(node, context);
               break;
-          case 16 /* JS_FUNCTION_EXPRESSION */:
+          case 17 /* JS_FUNCTION_EXPRESSION */:
               genFunctionExpression(node, context);
               break;
-          case 17 /* JS_SEQUENCE_EXPRESSION */:
+          case 18 /* JS_SEQUENCE_EXPRESSION */:
               genSequenceExpression(node, context);
               break;
-          case 18 /* JS_CONDITIONAL_EXPRESSION */:
+          case 19 /* JS_CONDITIONAL_EXPRESSION */:
               genConditionalExpression(node, context);
+              break;
+          case 20 /* JS_CACHE_EXPRESSION */:
+              genCacheExpression(node, context);
               break;
           /* istanbul ignore next */
           default:
@@ -2050,7 +2007,7 @@ var VueDOMCompiler = (function (exports) {
       context.indentLevel--;
       newline();
       push(`: `);
-      const isNested = alternate.type === 18 /* JS_CONDITIONAL_EXPRESSION */;
+      const isNested = alternate.type === 19 /* JS_CONDITIONAL_EXPRESSION */;
       if (!isNested) {
           context.indentLevel++;
       }
@@ -2063,6 +2020,11 @@ var VueDOMCompiler = (function (exports) {
   function genSequenceExpression(node, context) {
       context.push(`(`);
       genNodeList(node.expressions, context);
+      context.push(`)`);
+  }
+  function genCacheExpression(node, context) {
+      context.push(`_cache[${node.index}] || (_cache[${node.index}] = `);
+      genNode(node.value, context);
       context.push(`)`);
   }
 
@@ -2121,7 +2083,7 @@ var VueDOMCompiler = (function (exports) {
                       .expressions[1];
                   while (true) {
                       if (parentCondition.alternate.type ===
-                          18 /* JS_CONDITIONAL_EXPRESSION */) {
+                          19 /* JS_CONDITIONAL_EXPRESSION */) {
                           parentCondition = parentCondition.alternate;
                       }
                       else {
@@ -2180,7 +2142,7 @@ var VueDOMCompiler = (function (exports) {
           const childCodegen = child.codegenNode;
           let vnodeCall = childCodegen;
           // Element with custom directives. Locate the actual createVNode() call.
-          if (vnodeCall.callee === APPLY_DIRECTIVES) {
+          if (vnodeCall.callee === WITH_DIRECTIVES) {
               vnodeCall = vnodeCall.arguments[0];
           }
           // Change createVNode to createBlock.
@@ -2216,7 +2178,8 @@ var VueDOMCompiler = (function (exports) {
           ? 64 /* KEYED_FRAGMENT */
           : 128 /* UNKEYED_FRAGMENT */;
       const codegenNode = createSequenceExpression([
-          createCallExpression(helper(OPEN_BLOCK)),
+          // fragment blocks disable tracking since they always diff their children
+          createCallExpression(helper(OPEN_BLOCK), [`false`]),
           createCallExpression(helper(CREATE_BLOCK), [
               helper(FRAGMENT),
               `null`,
@@ -2276,7 +2239,7 @@ var VueDOMCompiler = (function (exports) {
               // Normal element v-for. Directly use the child's codegenNode
               // arguments, but replace createVNode() with createBlock()
               let codegenNode = node.codegenNode;
-              if (codegenNode.callee === APPLY_DIRECTIVES) {
+              if (codegenNode.callee === WITH_DIRECTIVES) {
                   codegenNode.arguments[0].callee = helper(CREATE_BLOCK);
               }
               else {
@@ -2391,9 +2354,7 @@ var VueDOMCompiler = (function (exports) {
       const dynamicSlots = [];
       // If the slot is inside a v-for or another v-slot, force it to be dynamic
       // since it likely uses a scope variable.
-      // TODO: This can be further optimized to only make it dynamic when the slot
-      // actually uses the scope variables.
-      let hasDynamicSlots = context.scopes.vSlot > 1 || context.scopes.vFor > 0;
+      let hasDynamicSlots = context.scopes.vSlot > 0 || context.scopes.vFor > 0;
       // 1. Check for default slot with slotProps on component itself.
       //    <Comp v-slot="{ prop }"/>
       const explicitDefaultSlot = findDir(node, 'slot', true);
@@ -2462,7 +2423,7 @@ var VueDOMCompiler = (function (exports) {
                    assert(dynamicSlots.length > 0);
                   // attach this slot to previous conditional
                   let conditional = dynamicSlots[dynamicSlots.length - 1];
-                  while (conditional.alternate.type === 18 /* JS_CONDITIONAL_EXPRESSION */) {
+                  while (conditional.alternate.type === 19 /* JS_CONDITIONAL_EXPRESSION */) {
                       conditional = conditional.alternate;
                   }
                   conditional.alternate = vElse.exp
@@ -2535,108 +2496,139 @@ var VueDOMCompiler = (function (exports) {
   const directiveImportMap = new WeakMap();
   // generate a JavaScript AST for this element's codegen
   const transformElement = (node, context) => {
-      if (node.type === 1 /* ELEMENT */) {
-          if (node.tagType === 0 /* ELEMENT */ ||
-              node.tagType === 1 /* COMPONENT */ ||
-              // <template> with v-if or v-for are ignored during traversal.
-              // <template> without v-slot should be treated as a normal element.
-              (node.tagType === 3 /* TEMPLATE */ && !node.props.some(isVSlot))) {
-              // perform the work on exit, after all child expressions have been
-              // processed and merged.
-              return () => {
-                  const isComponent = node.tagType === 1 /* COMPONENT */;
-                  let hasProps = node.props.length > 0;
-                  let patchFlag = 0;
-                  let runtimeDirectives;
-                  let dynamicPropNames;
-                  if (isComponent) {
-                      context.helper(RESOLVE_COMPONENT);
-                      context.components.add(node.tag);
-                  }
-                  const args = [
-                      isComponent ? toValidAssetId(node.tag, `component`) : `"${node.tag}"`
-                  ];
-                  // props
-                  if (hasProps) {
-                      const propsBuildResult = buildProps(node, context);
-                      patchFlag = propsBuildResult.patchFlag;
-                      dynamicPropNames = propsBuildResult.dynamicPropNames;
-                      runtimeDirectives = propsBuildResult.directives;
-                      if (!propsBuildResult.props) {
-                          hasProps = false;
-                      }
-                      else {
-                          args.push(propsBuildResult.props);
+      if (node.type !== 1 /* ELEMENT */ ||
+          // handled by transformSlotOutlet
+          node.tagType === 2 /* SLOT */ ||
+          // <template v-if/v-for> should have already been replaced
+          // <templte v-slot> is handled by buildSlots
+          (node.tagType === 3 /* TEMPLATE */ && node.props.some(isVSlot))) {
+          return;
+      }
+      // perform the work on exit, after all child expressions have been
+      // processed and merged.
+      return () => {
+          const isComponent = node.tagType === 1 /* COMPONENT */;
+          let hasProps = node.props.length > 0;
+          let patchFlag = 0;
+          let runtimeDirectives;
+          let dynamicPropNames;
+          let dynamicComponent;
+          // handle dynamic component
+          const isProp = findProp(node, 'is');
+          if (node.tag === 'component') {
+              if (isProp) {
+                  // static <component is="foo" />
+                  if (isProp.type === 6 /* ATTRIBUTE */) {
+                      const tag = isProp.value && isProp.value.content;
+                      if (tag) {
+                          context.helper(RESOLVE_COMPONENT);
+                          context.components.add(tag);
+                          dynamicComponent = toValidAssetId(tag, `component`);
                       }
                   }
-                  // children
-                  const hasChildren = node.children.length > 0;
-                  if (hasChildren) {
-                      if (!hasProps) {
-                          args.push(`null`);
-                      }
-                      if (isComponent) {
-                          const { slots, hasDynamicSlots } = buildSlots(node, context);
-                          args.push(slots);
-                          if (hasDynamicSlots) {
-                              patchFlag |= 256 /* DYNAMIC_SLOTS */;
-                          }
-                      }
-                      else if (node.children.length === 1) {
-                          const child = node.children[0];
-                          const type = child.type;
-                          const hasDynamicTextChild = type === 5 /* INTERPOLATION */ ||
-                              type === 8 /* COMPOUND_EXPRESSION */;
-                          if (hasDynamicTextChild) {
-                              patchFlag |= 1 /* TEXT */;
-                          }
-                          // pass directly if the only child is a text node
-                          // (plain / interpolation / expression)
-                          if (hasDynamicTextChild || type === 2 /* TEXT */) {
-                              args.push(child);
-                          }
-                          else {
-                              args.push(node.children);
-                          }
-                      }
-                      else {
-                          args.push(node.children);
-                      }
+                  // dynamic <component :is="asdf" />
+                  else if (isProp.exp) {
+                      dynamicComponent = createCallExpression(context.helper(RESOLVE_DYNAMIC_COMPONENT), [isProp.exp]);
                   }
-                  // patchFlag & dynamicPropNames
-                  if (patchFlag !== 0) {
-                      if (!hasChildren) {
-                          if (!hasProps) {
-                              args.push(`null`);
-                          }
-                          args.push(`null`);
-                      }
-                      {
-                          const flagNames = Object.keys(PatchFlagNames)
-                              .map(Number)
-                              .filter(n => n > 0 && patchFlag & n)
-                              .map(n => PatchFlagNames[n])
-                              .join(`, `);
-                          args.push(patchFlag + ` /* ${flagNames} */`);
-                      }
-                      if (dynamicPropNames && dynamicPropNames.length) {
-                          args.push(`[${dynamicPropNames.map(n => JSON.stringify(n)).join(`, `)}]`);
-                      }
+              }
+          }
+          if (isComponent && !dynamicComponent) {
+              context.helper(RESOLVE_COMPONENT);
+              context.components.add(node.tag);
+          }
+          const args = [
+              dynamicComponent
+                  ? dynamicComponent
+                  : isComponent
+                      ? toValidAssetId(node.tag, `component`)
+                      : node.tagType === 4 /* PORTAL */
+                          ? context.helper(PORTAL)
+                          : node.tagType === 5 /* SUSPENSE */
+                              ? context.helper(SUSPENSE)
+                              : `"${node.tag}"`
+          ];
+          // props
+          if (hasProps) {
+              const propsBuildResult = buildProps(node, context, 
+              // skip reserved "is" prop <component is>
+              node.props.filter(p => p !== isProp));
+              patchFlag = propsBuildResult.patchFlag;
+              dynamicPropNames = propsBuildResult.dynamicPropNames;
+              runtimeDirectives = propsBuildResult.directives;
+              if (!propsBuildResult.props) {
+                  hasProps = false;
+              }
+              else {
+                  args.push(propsBuildResult.props);
+              }
+          }
+          // children
+          const hasChildren = node.children.length > 0;
+          if (hasChildren) {
+              if (!hasProps) {
+                  args.push(`null`);
+              }
+              if (isComponent) {
+                  const { slots, hasDynamicSlots } = buildSlots(node, context);
+                  args.push(slots);
+                  if (hasDynamicSlots) {
+                      patchFlag |= 256 /* DYNAMIC_SLOTS */;
                   }
-                  const { loc } = node;
-                  const vnode = createCallExpression(context.helper(CREATE_VNODE), args, loc);
-                  if (runtimeDirectives && runtimeDirectives.length) {
-                      node.codegenNode = createCallExpression(context.helper(APPLY_DIRECTIVES), [
-                          vnode,
-                          createArrayExpression(runtimeDirectives.map(dir => buildDirectiveArgs(dir, context)), loc)
-                      ], loc);
+              }
+              else if (node.children.length === 1) {
+                  const child = node.children[0];
+                  const type = child.type;
+                  // check for dynamic text children
+                  const hasDynamicTextChild = type === 5 /* INTERPOLATION */ ||
+                      type === 8 /* COMPOUND_EXPRESSION */;
+                  if (hasDynamicTextChild && !isStaticNode(child)) {
+                      patchFlag |= 1 /* TEXT */;
+                  }
+                  // pass directly if the only child is a text node
+                  // (plain / interpolation / expression)
+                  if (hasDynamicTextChild || type === 2 /* TEXT */) {
+                      args.push(child);
                   }
                   else {
-                      node.codegenNode = vnode;
+                      args.push(node.children);
                   }
-              };
+              }
+              else {
+                  args.push(node.children);
+              }
           }
-      }
+          // patchFlag & dynamicPropNames
+          if (patchFlag !== 0) {
+              if (!hasChildren) {
+                  if (!hasProps) {
+                      args.push(`null`);
+                  }
+                  args.push(`null`);
+              }
+              {
+                  const flagNames = Object.keys(PatchFlagNames)
+                      .map(Number)
+                      .filter(n => n > 0 && patchFlag & n)
+                      .map(n => PatchFlagNames[n])
+                      .join(`, `);
+                  args.push(patchFlag + ` /* ${flagNames} */`);
+              }
+              if (dynamicPropNames && dynamicPropNames.length) {
+                  args.push(`[${dynamicPropNames.map(n => JSON.stringify(n)).join(`, `)}]`);
+              }
+          }
+          const { loc } = node;
+          const vnode = createCallExpression(context.helper(CREATE_VNODE), args, loc);
+          if (runtimeDirectives && runtimeDirectives.length) {
+              node.codegenNode = createCallExpression(context.helper(WITH_DIRECTIVES), [
+                  vnode,
+                  createArrayExpression(runtimeDirectives.map(dir => buildDirectiveArgs(dir, context)), loc)
+              ], loc);
+          }
+          else {
+              node.codegenNode = vnode;
+          }
+      };
   };
   function buildProps(node, context, props = node.props) {
       const elementLoc = node.loc;
@@ -2653,20 +2645,24 @@ var VueDOMCompiler = (function (exports) {
       const dynamicPropNames = [];
       const analyzePatchFlag = ({ key, value }) => {
           if (key.type === 4 /* SIMPLE_EXPRESSION */ && key.isStatic) {
-              if (value.type !== 4 /* SIMPLE_EXPRESSION */ || !value.isStatic) {
-                  const name = key.content;
-                  if (name === 'ref') {
-                      hasRef = true;
-                  }
-                  else if (name === 'class') {
-                      hasClassBinding = true;
-                  }
-                  else if (name === 'style') {
-                      hasStyleBinding = true;
-                  }
-                  else if (name !== 'key') {
-                      dynamicPropNames.push(key.content);
-                  }
+              if (value.type === 20 /* JS_CACHE_EXPRESSION */ ||
+                  ((value.type === 4 /* SIMPLE_EXPRESSION */ ||
+                      value.type === 8 /* COMPOUND_EXPRESSION */) &&
+                      isStaticNode(value))) {
+                  return;
+              }
+              const name = key.content;
+              if (name === 'ref') {
+                  hasRef = true;
+              }
+              else if (name === 'class') {
+                  hasClassBinding = true;
+              }
+              else if (name === 'style') {
+                  hasStyleBinding = true;
+              }
+              else if (name !== 'key') {
+                  dynamicPropNames.push(name);
               }
           }
           else {
@@ -2709,7 +2705,7 @@ var VueDOMCompiler = (function (exports) {
                       else {
                           // v-on="obj" -> toHandlers(obj)
                           mergeArgs.push({
-                              type: 12 /* JS_CALL_EXPRESSION */,
+                              type: 13 /* JS_CALL_EXPRESSION */,
                               loc,
                               callee: context.helper(TO_HANDLERS),
                               arguments: [exp]
@@ -2819,7 +2815,7 @@ var VueDOMCompiler = (function (exports) {
       return deduped;
   }
   function mergeAsArray(existing, incoming) {
-      if (existing.value.type === 15 /* JS_ARRAY_EXPRESSION */) {
+      if (existing.value.type === 16 /* JS_ARRAY_EXPRESSION */) {
           existing.value.elements.push(incoming.value);
       }
       else {
@@ -2919,12 +2915,8 @@ var VueDOMCompiler = (function (exports) {
   };
 
   const fnExpRE = /^([\w$_]+|\([^)]*?\))\s*=>|^function(?:\s+[\w$]+)?\s*\(/;
-  // v-on without arg is handled directly in ./element.ts due to it affecting
-  // codegen for the entire props object. This transform here is only for v-on
-  // *with* args.
-  const transformOn = (dir, node, context) => {
-      const { loc, modifiers } = dir;
-      const arg = dir.arg;
+  const transformOn = (dir, node, context, augmentor) => {
+      const { loc, modifiers, arg } = dir;
       if (!dir.exp && !modifiers.length) {
           context.onError(createCompilerError(40 /* X_V_ON_NO_EXPRESSION */, loc));
       }
@@ -2943,15 +2935,13 @@ var VueDOMCompiler = (function (exports) {
           eventName.children.unshift(`"on" + (`);
           eventName.children.push(`)`);
       }
-      // TODO .once modifier handling since it is platform agnostic
-      // other modifiers are handled in compiler-dom
       // handler processing
-      if (dir.exp) {
-          // exp is guaranteed to be a simple expression here because v-on w/ arg is
-          // skipped by transformExpression as a special case.
-          let exp = dir.exp;
-          const isInlineStatement = !(isMemberExpression(exp.content) || fnExpRE.test(exp.content));
-          if (isInlineStatement) {
+      let exp = dir.exp;
+      let isCacheable = !exp;
+      if (exp) {
+          const isMemberExp = isMemberExpression(exp.content);
+          const isInlineStatement = !(isMemberExp || fnExpRE.test(exp.content));
+          if (isInlineStatement || (isCacheable && isMemberExp)) {
               // wrap inline statement in a function expression
               exp = createCompoundExpression([
                   `$event => (`,
@@ -2959,14 +2949,24 @@ var VueDOMCompiler = (function (exports) {
                   `)`
               ]);
           }
-          dir.exp = exp;
       }
-      return {
+      let ret = {
           props: [
-              createObjectProperty(eventName, dir.exp || createSimpleExpression(`() => {}`, false, loc))
+              createObjectProperty(eventName, exp || createSimpleExpression(`() => {}`, false, loc))
           ],
           needRuntime: false
       };
+      // apply extended compiler augmentor
+      if (augmentor) {
+          ret = augmentor(ret);
+      }
+      if (isCacheable) {
+          // cache handlers so that it's always the same handler being passed down.
+          // this avoids unnecessary re-renders when users use inline hanlders on
+          // components.
+          ret.props[0].value = context.cache(ret.props[0].value);
+      }
+      return ret;
   };
 
   // v-bind without arg is handled directly in ./element.ts due to it affecting
@@ -3005,16 +3005,18 @@ var VueDOMCompiler = (function (exports) {
   const isText$1 = (node) => node.type === 5 /* INTERPOLATION */ || node.type === 2 /* TEXT */;
   // Merge adjacent text nodes and expressions into a single expression
   // e.g. <div>abc {{ d }} {{ e }}</div> should have a single expression node as child.
-  const optimizeText = node => {
+  const transformText = (node, context) => {
       if (node.type === 0 /* ROOT */ || node.type === 1 /* ELEMENT */) {
           // perform the transform on node exit so that all expressions have already
           // been processed.
           return () => {
               const children = node.children;
               let currentContainer = undefined;
+              let hasText = false;
               for (let i = 0; i < children.length; i++) {
                   const child = children[i];
                   if (isText$1(child)) {
+                      hasText = true;
                       for (let j = i + 1; j < children.length; j++) {
                           const next = children[j];
                           if (isText$1(next)) {
@@ -3034,6 +3036,25 @@ var VueDOMCompiler = (function (exports) {
                               currentContainer = undefined;
                               break;
                           }
+                      }
+                  }
+              }
+              if (hasText && children.length > 1) {
+                  // when an element has mixed text/element children, convert text nodes
+                  // into createVNode(Text) calls.
+                  for (let i = 0; i < children.length; i++) {
+                      const child = children[i];
+                      if (isText$1(child) || child.type === 8 /* COMPOUND_EXPRESSION */) {
+                          const callArgs = [context.helper(TEXT), `null`, child];
+                          if (child.type !== 2 /* TEXT */) {
+                              callArgs.push(`${1 /* TEXT */} /* ${PatchFlagNames[1 /* TEXT */]} */`);
+                          }
+                          children[i] = {
+                              type: 12 /* TEXT_CALL */,
+                              content: child,
+                              loc: child.loc,
+                              codegenNode: createCallExpression(context.helper(CREATE_VNODE), callArgs)
+                          };
                       }
                   }
               }
@@ -3072,18 +3093,59 @@ var VueDOMCompiler = (function (exports) {
               ])
           : createSimpleExpression('onUpdate:modelValue', true);
       const props = [
+          // modelValue: foo
           createObjectProperty(propName, dir.exp),
+          // "onUpdate:modelValue": $event => (foo = $event)
           createObjectProperty(eventName, createCompoundExpression([
               `$event => (`,
               ...(exp.type === 4 /* SIMPLE_EXPRESSION */ ? [exp] : exp.children),
               ` = $event)`
           ]))
       ];
-      if (dir.modifiers.length) ;
+      // modelModifiers: { foo: true, "bar-baz": true }
+      if (dir.modifiers.length && node.tagType === 1 /* COMPONENT */) {
+          const modifiers = dir.modifiers
+              .map(m => (isSimpleIdentifier(m) ? m : JSON.stringify(m)) + `: true`)
+              .join(`, `);
+          props.push(createObjectProperty(`modelModifiers`, createSimpleExpression(`{ ${modifiers} }`, false, dir.loc, true)));
+      }
       return createTransformProps(props);
   };
   function createTransformProps(props = []) {
       return { props, needRuntime: false };
+  }
+
+  const range = 2;
+  function generateCodeFrame(source, start = 0, end = source.length) {
+      const lines = source.split(/\r?\n/);
+      let count = 0;
+      const res = [];
+      for (let i = 0; i < lines.length; i++) {
+          count += lines[i].length + 1;
+          if (count >= start) {
+              for (let j = i - range; j <= i + range || end > count; j++) {
+                  if (j < 0 || j >= lines.length)
+                      continue;
+                  res.push(`${j + 1}${' '.repeat(3 - String(j + 1).length)}|  ${lines[j]}`);
+                  const lineLength = lines[j].length;
+                  if (j === i) {
+                      // push underline
+                      const pad = start - (count - lineLength) + 1;
+                      const length = end > count ? lineLength - pad : end - start;
+                      res.push(`   |  ` + ' '.repeat(pad) + '^'.repeat(length));
+                  }
+                  else if (j > i) {
+                      if (end > count) {
+                          const length = Math.min(end - count, lineLength);
+                          res.push(`   |  ` + '^'.repeat(length));
+                      }
+                      count += lineLength + 1;
+                  }
+              }
+              break;
+          }
+      }
+      return res.join('\n');
   }
 
   // we name it `baseCompile` so that higher order compilers like @vue/compiler-dom
@@ -3093,10 +3155,10 @@ var VueDOMCompiler = (function (exports) {
       {
           const onError = options.onError || defaultOnError;
           if (options.prefixIdentifiers === true) {
-              onError(createCompilerError(49 /* X_PREFIX_ID_NOT_SUPPORTED */));
+              onError(createCompilerError(51 /* X_PREFIX_ID_NOT_SUPPORTED */));
           }
           else if (options.mode === 'module') {
-              onError(createCompilerError(50 /* X_MODULE_MODE_NOT_SUPPORTED */));
+              onError(createCompilerError(52 /* X_MODULE_MODE_NOT_SUPPORTED */));
           }
       }
       const ast = isString(template) ? parse(template, options) : template;
@@ -3109,10 +3171,10 @@ var VueDOMCompiler = (function (exports) {
               transformIf,
               transformFor,
               ...( []),
-              trackSlotScopes,
               transformSlotOutlet,
               transformElement,
-              optimizeText,
+              trackSlotScopes,
+              transformText,
               ...(options.nodeTransforms || []) // user transforms
           ],
           directiveTransforms: {
@@ -3128,6 +3190,32 @@ var VueDOMCompiler = (function (exports) {
           prefixIdentifiers
       });
   }
+
+  // https://developer.mozilla.org/en-US/docs/Web/HTML/Element
+  const HTML_TAGS = 'html,body,base,head,link,meta,style,title,address,article,aside,footer,' +
+      'header,h1,h2,h3,h4,h5,h6,hgroup,nav,section,div,dd,dl,dt,figcaption,' +
+      'figure,picture,hr,img,li,main,ol,p,pre,ul,a,b,abbr,bdi,bdo,br,cite,code,' +
+      'data,dfn,em,i,kbd,mark,q,rp,rt,rtc,ruby,s,samp,small,span,strong,sub,sup,' +
+      'time,u,var,wbr,area,audio,map,track,video,embed,object,param,source,' +
+      'canvas,script,noscript,del,ins,caption,col,colgroup,table,thead,tbody,td,' +
+      'th,tr,button,datalist,fieldset,form,input,label,legend,meter,optgroup,' +
+      'option,output,progress,select,textarea,details,dialog,menu,menuitem,' +
+      'summary,content,element,shadow,template,blockquote,iframe,tfoot';
+  // https://developer.mozilla.org/en-US/docs/Web/SVG/Element
+  const SVG_TAGS = 'svg,animate,animateMotion,animateTransform,circle,clipPath,color-profile,' +
+      'defs,desc,discard,ellipse,feBlend,feColorMatrix,feComponentTransfer,' +
+      'feComposite,feConvolveMatrix,feDiffuseLighting,feDisplacementMap,' +
+      'feDistanceLight,feDropShadow,feFlood,feFuncA,feFuncB,feFuncG,feFuncR,' +
+      'feGaussianBlur,feImage,feMerge,feMergeNode,feMorphology,feOffset,' +
+      'fePointLight,feSpecularLighting,feSpotLight,feTile,feTurbulence,filter,' +
+      'foreignObject,g,hatch,hatchpath,image,line,lineGradient,marker,mask,' +
+      'mesh,meshgradient,meshpatch,meshrow,metadata,mpath,path,pattern,' +
+      'polygon,polyline,radialGradient,rect,set,solidcolor,stop,switch,symbol,' +
+      'text,textPath,title,tspan,unknown,use,view';
+  const VOID_TAGS = 'area,base,br,col,embed,hr,img,input,link,meta,param,source,track,wbr';
+  const isHTMLTag = /*#__PURE__*/ makeMap(HTML_TAGS);
+  const isSVGTag = /*#__PURE__*/ makeMap(SVG_TAGS);
+  const isVoidTag = /*#__PURE__*/ makeMap(VOID_TAGS);
 
   const parserOptionsMinimal = {
       isVoidTag,
@@ -3231,21 +3319,22 @@ var VueDOMCompiler = (function (exports) {
       return createCompilerError(code, loc,  DOMErrorMessages );
   }
   const DOMErrorMessages = {
-      [51 /* X_V_HTML_NO_EXPRESSION */]: `v-html is missing expression.`,
-      [52 /* X_V_HTML_WITH_CHILDREN */]: `v-html will override element children.`,
-      [53 /* X_V_TEXT_NO_EXPRESSION */]: `v-text is missing expression.`,
-      [54 /* X_V_TEXT_WITH_CHILDREN */]: `v-text will override element children.`,
-      [55 /* X_V_MODEL_ON_INVALID_ELEMENT */]: `v-model can only be used on <input>, <textarea> and <select> elements.`,
-      [56 /* X_V_MODEL_ARG_ON_ELEMENT */]: `v-model argument is not supported on plain elements.`
+      [53 /* X_V_HTML_NO_EXPRESSION */]: `v-html is missing expression.`,
+      [54 /* X_V_HTML_WITH_CHILDREN */]: `v-html will override element children.`,
+      [55 /* X_V_TEXT_NO_EXPRESSION */]: `v-text is missing expression.`,
+      [56 /* X_V_TEXT_WITH_CHILDREN */]: `v-text will override element children.`,
+      [57 /* X_V_MODEL_ON_INVALID_ELEMENT */]: `v-model can only be used on <input>, <textarea> and <select> elements.`,
+      [58 /* X_V_MODEL_ARG_ON_ELEMENT */]: `v-model argument is not supported on plain elements.`,
+      [59 /* X_V_MODEL_ON_FILE_INPUT_ELEMENT */]: `v-model cannot used on file inputs since they are read-only. Use a v-on:change listener instead.`
   };
 
   const transformVHtml = (dir, node, context) => {
       const { exp, loc } = dir;
       if (!exp) {
-          context.onError(createDOMCompilerError(51 /* X_V_HTML_NO_EXPRESSION */, loc));
+          context.onError(createDOMCompilerError(53 /* X_V_HTML_NO_EXPRESSION */, loc));
       }
       if (node.children.length) {
-          context.onError(createDOMCompilerError(52 /* X_V_HTML_WITH_CHILDREN */, loc));
+          context.onError(createDOMCompilerError(54 /* X_V_HTML_WITH_CHILDREN */, loc));
           node.children.length = 0;
       }
       return {
@@ -3259,10 +3348,10 @@ var VueDOMCompiler = (function (exports) {
   const transformVText = (dir, node, context) => {
       const { exp, loc } = dir;
       if (!exp) {
-          context.onError(createDOMCompilerError(53 /* X_V_TEXT_NO_EXPRESSION */, loc));
+          context.onError(createDOMCompilerError(55 /* X_V_TEXT_NO_EXPRESSION */, loc));
       }
       if (node.children.length) {
-          context.onError(createDOMCompilerError(54 /* X_V_TEXT_WITH_CHILDREN */, loc));
+          context.onError(createDOMCompilerError(56 /* X_V_TEXT_WITH_CHILDREN */, loc));
           node.children.length = 0;
       }
       return {
@@ -3278,23 +3367,32 @@ var VueDOMCompiler = (function (exports) {
   const V_MODEL_TEXT = Symbol( `vModelText` );
   const V_MODEL_SELECT = Symbol( `vModelSelect` );
   const V_MODEL_DYNAMIC = Symbol( `vModelDynamic` );
+  const V_ON_WITH_MODIFIERS = Symbol( `vOnModifiersGuard` );
+  const V_ON_WITH_KEYS = Symbol( `vOnKeysGuard` );
   registerRuntimeHelpers({
       [V_MODEL_RADIO]: `vModelRadio`,
       [V_MODEL_CHECKBOX]: `vModelCheckbox`,
       [V_MODEL_TEXT]: `vModelText`,
       [V_MODEL_SELECT]: `vModelSelect`,
-      [V_MODEL_DYNAMIC]: `vModelDynamic`
+      [V_MODEL_DYNAMIC]: `vModelDynamic`,
+      [V_ON_WITH_MODIFIERS]: `withModifiers`,
+      [V_ON_WITH_KEYS]: `withKeys`
   });
 
   const transformModel$1 = (dir, node, context) => {
-      const res = transformModel(dir, node, context);
+      const baseResult = transformModel(dir, node, context);
+      // base transform has errors
+      if (!baseResult.props.length) {
+          return baseResult;
+      }
       const { tag, tagType } = node;
       if (tagType === 0 /* ELEMENT */) {
           if (dir.arg) {
-              context.onError(createDOMCompilerError(56 /* X_V_MODEL_ARG_ON_ELEMENT */, dir.arg.loc));
+              context.onError(createDOMCompilerError(58 /* X_V_MODEL_ARG_ON_ELEMENT */, dir.arg.loc));
           }
           if (tag === 'input' || tag === 'textarea' || tag === 'select') {
               let directiveToUse = V_MODEL_TEXT;
+              let isInvalidType = false;
               if (tag === 'input') {
                   const type = findProp(node, `type`);
                   if (type) {
@@ -3310,6 +3408,10 @@ var VueDOMCompiler = (function (exports) {
                               case 'checkbox':
                                   directiveToUse = V_MODEL_CHECKBOX;
                                   break;
+                              case 'file':
+                                  isInvalidType = true;
+                                  context.onError(createDOMCompilerError(59 /* X_V_MODEL_ON_FILE_INPUT_ELEMENT */, dir.loc));
+                                  break;
                           }
                       }
                   }
@@ -3319,14 +3421,67 @@ var VueDOMCompiler = (function (exports) {
               }
               // inject runtime directive
               // by returning the helper symbol via needRuntime
-              // the import will replaced a resovleDirective call.
-              res.needRuntime = context.helper(directiveToUse);
+              // the import will replaced a resolveDirective call.
+              if (!isInvalidType) {
+                  baseResult.needRuntime = context.helper(directiveToUse);
+              }
           }
           else {
-              context.onError(createDOMCompilerError(55 /* X_V_MODEL_ON_INVALID_ELEMENT */, dir.loc));
+              context.onError(createDOMCompilerError(57 /* X_V_MODEL_ON_INVALID_ELEMENT */, dir.loc));
           }
       }
-      return res;
+      return baseResult;
+  };
+
+  const isEventOptionModifier = /*#__PURE__*/ makeMap(`passive,once,capture`);
+  const isNonKeyModifier = /*#__PURE__*/ makeMap(
+  // event propagation management
+`stop,prevent,self,`   +
+      // system modifiers + exact
+      `ctrl,shift,alt,meta,exact,` +
+      // mouse
+      `left,middle,right`);
+  const isKeyboardEvent = /*#__PURE__*/ makeMap(`onkeyup,onkeydown,onkeypress`, true);
+  const transformOn$1 = (dir, node, context) => {
+      return transformOn(dir, node, context, baseResult => {
+          const { modifiers } = dir;
+          if (!modifiers.length)
+              return baseResult;
+          let { key, value: handlerExp } = baseResult.props[0];
+          // modifiers for addEventListener() options, e.g. .passive & .capture
+          const eventOptionModifiers = modifiers.filter(isEventOptionModifier);
+          // modifiers that needs runtime guards
+          const runtimeModifiers = modifiers.filter(m => !isEventOptionModifier(m));
+          // built-in modifiers that are not keys
+          const nonKeyModifiers = runtimeModifiers.filter(isNonKeyModifier);
+          if (nonKeyModifiers.length) {
+              handlerExp = createCallExpression(context.helper(V_ON_WITH_MODIFIERS), [
+                  handlerExp,
+                  JSON.stringify(nonKeyModifiers)
+              ]);
+          }
+          const keyModifiers = runtimeModifiers.filter(m => !isNonKeyModifier(m));
+          if (keyModifiers.length &&
+              // if event name is dynamic, always wrap with keys guard
+              (key.type === 8 /* COMPOUND_EXPRESSION */ ||
+                  !key.isStatic ||
+                  isKeyboardEvent(key.content))) {
+              handlerExp = createCallExpression(context.helper(V_ON_WITH_KEYS), [
+                  handlerExp,
+                  JSON.stringify(keyModifiers)
+              ]);
+          }
+          if (eventOptionModifiers.length) {
+              handlerExp = createObjectExpression([
+                  createObjectProperty('handler', handlerExp),
+                  createObjectProperty('options', createObjectExpression(eventOptionModifiers.map(modifier => createObjectProperty(modifier, createSimpleExpression('true', false)))))
+              ]);
+          }
+          return {
+              props: [createObjectProperty(key, handlerExp)],
+              needRuntime: false
+          };
+      });
   };
 
   function compile(template, options = {}) {
@@ -3339,6 +3494,7 @@ var VueDOMCompiler = (function (exports) {
               html: transformVHtml,
               text: transformVText,
               model: transformModel$1,
+              on: transformOn$1,
               ...(options.directiveTransforms || {})
           }
       });
@@ -3351,6 +3507,7 @@ var VueDOMCompiler = (function (exports) {
   exports.compile = compile;
   exports.createArrayExpression = createArrayExpression;
   exports.createBlockExpression = createBlockExpression;
+  exports.createCacheExpression = createCacheExpression;
   exports.createCallExpression = createCallExpression;
   exports.createCompilerError = createCompilerError;
   exports.createCompoundExpression = createCompoundExpression;
@@ -3365,14 +3522,19 @@ var VueDOMCompiler = (function (exports) {
   exports.findDir = findDir;
   exports.findProp = findProp;
   exports.generate = generate;
+  exports.generateCodeFrame = generateCodeFrame;
   exports.getInnerRange = getInnerRange;
+  exports.hasScopeRef = hasScopeRef;
   exports.injectProp = injectProp;
   exports.isEmptyExpression = isEmptyExpression;
+  exports.isHTMLTag = isHTMLTag;
   exports.isMemberExpression = isMemberExpression;
+  exports.isSVGTag = isSVGTag;
   exports.isSimpleIdentifier = isSimpleIdentifier;
   exports.isSlotOutlet = isSlotOutlet;
   exports.isTemplateNode = isTemplateNode;
   exports.isVSlot = isVSlot;
+  exports.isVoidTag = isVoidTag;
   exports.loadDep = loadDep;
   exports.locStub = locStub;
   exports.parse = parse;

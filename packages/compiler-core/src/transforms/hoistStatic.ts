@@ -2,22 +2,19 @@ import {
   RootNode,
   NodeTypes,
   TemplateChildNode,
+  SimpleExpressionNode,
   ElementTypes,
   ElementCodegenNode,
   PlainElementNode,
   ComponentNode,
   TemplateNode,
-  ElementNode
+  ElementNode,
+  PlainElementCodegenNode
 } from '../ast'
 import { TransformContext } from '../transform'
-import { APPLY_DIRECTIVES } from '../runtimeHelpers'
-import { PatchFlags } from '@vue/shared'
+import { WITH_DIRECTIVES } from '../runtimeHelpers'
+import { PatchFlags, isString, isSymbol } from '@vue/shared'
 import { isSlotOutlet, findProp } from '../utils'
-
-function hasDynamicKey(node: ElementNode) {
-  const keyProp = findProp(node, 'key')
-  return keyProp && keyProp.type === NodeTypes.DIRECTIVE
-}
 
 export function hoistStatic(root: RootNode, context: TransformContext) {
   walk(
@@ -53,11 +50,7 @@ function walk(
       child.type === NodeTypes.ELEMENT &&
       child.tagType === ElementTypes.ELEMENT
     ) {
-      if (
-        !doNotHoistNode &&
-        isStaticNode(child, resultCache) &&
-        !hasDynamicKey(child)
-      ) {
+      if (!doNotHoistNode && isStaticNode(child, resultCache)) {
         // whole tree is static
         child.codegenNode = context.hoist(child.codegenNode!)
         continue
@@ -69,15 +62,12 @@ function walk(
           (!flag ||
             flag === PatchFlags.NEED_PATCH ||
             flag === PatchFlags.TEXT) &&
-          !hasDynamicKey(child)
+          !hasDynamicKeyOrRef(child) &&
+          !hasCachedProps(child)
         ) {
-          let codegenNode = child.codegenNode as ElementCodegenNode
-          if (codegenNode.callee === APPLY_DIRECTIVES) {
-            codegenNode = codegenNode.arguments[0]
-          }
-          const props = codegenNode.arguments[1]
+          const props = getNodeProps(child)
           if (props && props !== `null`) {
-            codegenNode.arguments[1] = context.hoist(props)
+            getVNodeCall(child).arguments[1] = context.hoist(props)
           }
         }
       }
@@ -97,29 +87,21 @@ function walk(
   }
 }
 
-function getPatchFlag(node: PlainElementNode): number | undefined {
-  let codegenNode = node.codegenNode as ElementCodegenNode
-  if (codegenNode.callee === APPLY_DIRECTIVES) {
-    codegenNode = codegenNode.arguments[0]
-  }
-  const flag = codegenNode.arguments[3]
-  return flag ? parseInt(flag as string, 10) : undefined
-}
-
-function isStaticNode(
-  node: TemplateChildNode,
-  resultCache: Map<TemplateChildNode, boolean>
+export function isStaticNode(
+  node: TemplateChildNode | SimpleExpressionNode,
+  resultCache: Map<TemplateChildNode, boolean> = new Map()
 ): boolean {
   switch (node.type) {
     case NodeTypes.ELEMENT:
       if (node.tagType !== ElementTypes.ELEMENT) {
         return false
       }
-      if (resultCache.has(node)) {
-        return resultCache.get(node) as boolean
+      const cached = resultCache.get(node)
+      if (cached !== undefined) {
+        return cached
       }
       const flag = getPatchFlag(node)
-      if (!flag) {
+      if (!flag && !hasDynamicKeyOrRef(node) && !hasCachedProps(node)) {
         // element self is static. check its children.
         for (let i = 0; i < node.children.length; i++) {
           if (!isStaticNode(node.children[i], resultCache)) {
@@ -130,6 +112,7 @@ function isStaticNode(
         resultCache.set(node, true)
         return true
       } else {
+        resultCache.set(node, false)
         return false
       }
     case NodeTypes.TEXT:
@@ -137,9 +120,18 @@ function isStaticNode(
       return true
     case NodeTypes.IF:
     case NodeTypes.FOR:
-    case NodeTypes.INTERPOLATION:
-    case NodeTypes.COMPOUND_EXPRESSION:
       return false
+    case NodeTypes.INTERPOLATION:
+    case NodeTypes.TEXT_CALL:
+      return isStaticNode(node.content, resultCache)
+    case NodeTypes.SIMPLE_EXPRESSION:
+      return node.isConstant
+    case NodeTypes.COMPOUND_EXPRESSION:
+      return node.children.every(child => {
+        return (
+          isString(child) || isSymbol(child) || isStaticNode(child, resultCache)
+        )
+      })
     default:
       if (__DEV__) {
         const exhaustiveCheck: never = node
@@ -147,4 +139,52 @@ function isStaticNode(
       }
       return false
   }
+}
+
+function hasDynamicKeyOrRef(node: ElementNode): boolean {
+  return !!(findProp(node, 'key', true) || findProp(node, 'ref', true))
+}
+
+function hasCachedProps(node: PlainElementNode): boolean {
+  if (__BROWSER__) {
+    return false
+  }
+  const props = getNodeProps(node)
+  if (
+    props &&
+    props !== 'null' &&
+    props.type === NodeTypes.JS_OBJECT_EXPRESSION
+  ) {
+    const { properties } = props
+    for (let i = 0; i < properties.length; i++) {
+      if (properties[i].value.type === NodeTypes.JS_CACHE_EXPRESSION) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function getVNodeCall(node: PlainElementNode) {
+  let codegenNode = node.codegenNode as ElementCodegenNode
+  if (codegenNode.callee === WITH_DIRECTIVES) {
+    codegenNode = codegenNode.arguments[0]
+  }
+  return codegenNode
+}
+
+function getVNodeArgAt(
+  node: PlainElementNode,
+  index: number
+): PlainElementCodegenNode['arguments'][number] {
+  return getVNodeCall(node).arguments[index]
+}
+
+function getPatchFlag(node: PlainElementNode): number | undefined {
+  const flag = getVNodeArgAt(node, 3) as string
+  return flag ? parseInt(flag, 10) : undefined
+}
+
+function getNodeProps(node: PlainElementNode) {
+  return getVNodeArgAt(node, 1) as PlainElementCodegenNode['arguments'][1]
 }

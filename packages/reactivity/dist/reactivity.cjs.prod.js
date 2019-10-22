@@ -2,6 +2,20 @@
 
 Object.defineProperty(exports, '__esModule', { value: true });
 
+// Make a map and return a function for checking if a key
+// is in that map.
+//
+// IMPORTANT: all calls of this function must be prefixed with /*#__PURE__*/
+// So that rollup can tree-shake them if necessary.
+function makeMap(str, expectsLowerCase) {
+    const map = Object.create(null);
+    const list = str.split(',');
+    for (let i = 0; i < list.length; i++) {
+        map[list[i]] = true;
+    }
+    return expectsLowerCase ? val => !!map[val.toLowerCase()] : val => !!map[val];
+}
+
 const EMPTY_OBJ =  {};
 const NOOP = () => { };
 const hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -45,12 +59,12 @@ function createGetter(isReadonly) {
 }
 function set(target, key, value, receiver) {
     value = toRaw(value);
-    const hadKey = hasOwn(target, key);
     const oldValue = target[key];
     if (isRef(oldValue) && !isRef(value)) {
         oldValue.value = value;
         return true;
     }
+    const hadKey = hasOwn(target, key);
     const result = Reflect.set(target, key, value, receiver);
     // don't trigger if target is something up in the prototype chain of original
     if (target === toRaw(receiver)) {
@@ -315,11 +329,13 @@ const readonlyToRaw = new WeakMap();
 const readonlyValues = new WeakSet();
 const nonReactiveValues = new WeakSet();
 const collectionTypes = new Set([Set, Map, WeakMap, WeakSet]);
-const observableValueRE = /^\[object (?:Object|Array|Map|Set|WeakMap|WeakSet)\]$/;
+const isObservableType = /*#__PURE__*/ makeMap(['Object', 'Array', 'Map', 'Set', 'WeakMap', 'WeakSet']
+    .map(t => `[object ${t}]`)
+    .join(','));
 const canObserve = (value) => {
     return (!value._isVue &&
         !value._isVNode &&
-        observableValueRE.test(toTypeString(value)) &&
+        isObservableType(toTypeString(value)) &&
         !nonReactiveValues.has(value));
 };
 function reactive(target) {
@@ -388,7 +404,7 @@ function markNonReactive(value) {
 }
 
 const effectSymbol = Symbol( void 0);
-const activeReactiveEffectStack = [];
+const effectStack = [];
 const ITERATE_KEY = Symbol('iterate');
 function isEffect(fn) {
     return fn != null && fn[effectSymbol] === true;
@@ -431,14 +447,14 @@ function run(effect, fn, args) {
     if (!effect.active) {
         return fn(...args);
     }
-    if (activeReactiveEffectStack.indexOf(effect) === -1) {
+    if (!effectStack.includes(effect)) {
         cleanup(effect);
         try {
-            activeReactiveEffectStack.push(effect);
+            effectStack.push(effect);
             return fn(...args);
         }
         finally {
-            activeReactiveEffectStack.pop();
+            effectStack.pop();
         }
     }
 }
@@ -459,26 +475,24 @@ function resumeTracking() {
     shouldTrack = true;
 }
 function track(target, type, key) {
-    if (!shouldTrack) {
+    if (!shouldTrack || effectStack.length === 0) {
         return;
     }
-    const effect = activeReactiveEffectStack[activeReactiveEffectStack.length - 1];
-    if (effect) {
-        if (type === "iterate" /* ITERATE */) {
-            key = ITERATE_KEY;
-        }
-        let depsMap = targetMap.get(target);
-        if (depsMap === void 0) {
-            targetMap.set(target, (depsMap = new Map()));
-        }
-        let dep = depsMap.get(key);
-        if (dep === void 0) {
-            depsMap.set(key, (dep = new Set()));
-        }
-        if (!dep.has(effect)) {
-            dep.add(effect);
-            effect.deps.push(dep);
-        }
+    const effect = effectStack[effectStack.length - 1];
+    if (type === "iterate" /* ITERATE */) {
+        key = ITERATE_KEY;
+    }
+    let depsMap = targetMap.get(target);
+    if (depsMap === void 0) {
+        targetMap.set(target, (depsMap = new Map()));
+    }
+    let dep = depsMap.get(key);
+    if (dep === void 0) {
+        depsMap.set(key, (dep = new Set()));
+    }
+    if (!dep.has(effect)) {
+        dep.add(effect);
+        effect.deps.push(dep);
     }
 }
 function trigger(target, type, key, extraInfo) {
@@ -535,7 +549,6 @@ function scheduleRun(effect, target, type, key, extraInfo) {
     }
 }
 
-const refSymbol = Symbol( undefined);
 const convert = (val) => (isObject(val) ? reactive(val) : val);
 function ref(raw) {
     if (isRef(raw)) {
@@ -543,7 +556,7 @@ function ref(raw) {
     }
     raw = convert(raw);
     const v = {
-        [refSymbol]: true,
+        _isRef: true,
         get value() {
             track(v, "get" /* GET */, '');
             return raw;
@@ -556,7 +569,7 @@ function ref(raw) {
     return v;
 }
 function isRef(v) {
-    return v ? v[refSymbol] === true : false;
+    return v ? v._isRef === true : false;
 }
 function toRefs(object) {
     const ret = {};
@@ -567,7 +580,7 @@ function toRefs(object) {
 }
 function toProxyRef(object, key) {
     return {
-        [refSymbol]: true,
+        _isRef: true,
         get value() {
             return object[key];
         },
@@ -596,7 +609,7 @@ function computed(getterOrOptions) {
         }
     });
     return {
-        [refSymbol]: true,
+        _isRef: true,
         // expose effect so computed can be stopped
         effect: runner,
         get value() {
@@ -616,14 +629,15 @@ function computed(getterOrOptions) {
     };
 }
 function trackChildRun(childRunner) {
-    const parentRunner = activeReactiveEffectStack[activeReactiveEffectStack.length - 1];
-    if (parentRunner) {
-        for (let i = 0; i < childRunner.deps.length; i++) {
-            const dep = childRunner.deps[i];
-            if (!dep.has(parentRunner)) {
-                dep.add(parentRunner);
-                parentRunner.deps.push(dep);
-            }
+    if (effectStack.length === 0) {
+        return;
+    }
+    const parentRunner = effectStack[effectStack.length - 1];
+    for (let i = 0; i < childRunner.deps.length; i++) {
+        const dep = childRunner.deps[i];
+        if (!dep.has(parentRunner)) {
+            dep.add(parentRunner);
+            parentRunner.deps.push(dep);
         }
     }
 }

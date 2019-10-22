@@ -4,179 +4,45 @@ Object.defineProperty(exports, '__esModule', { value: true });
 
 var compilerCore = require('@vue/compiler-core');
 
-const HTMLTagSet = new Set([
-    'html',
-    'body',
-    'base',
-    'head',
-    'link',
-    'meta',
-    'style',
-    'title',
-    'address',
-    'article',
-    'aside',
-    'footer',
-    'header',
-    'h1',
-    'h2',
-    'h3',
-    'h4',
-    'h5',
-    'h6',
-    'hgroup',
-    'nav',
-    'section',
-    'div',
-    'dd',
-    'dl',
-    'dt',
-    'figcaption',
-    'figure',
-    'picture',
-    'hr',
-    'img',
-    'li',
-    'main',
-    'ol',
-    'p',
-    'pre',
-    'ul',
-    'a',
-    'b',
-    'abbr',
-    'bdi',
-    'bdo',
-    'br',
-    'cite',
-    'code',
-    'data',
-    'dfn',
-    'em',
-    'i',
-    'kbd',
-    'mark',
-    'q',
-    'rp',
-    'rt',
-    'rtc',
-    'ruby',
-    's',
-    'samp',
-    'small',
-    'span',
-    'strong',
-    'sub',
-    'sup',
-    'time',
-    'u',
-    'var',
-    'wbr',
-    'area',
-    'audio',
-    'map',
-    'track',
-    'video',
-    'embed',
-    'object',
-    'param',
-    'source',
-    'canvas',
-    'script',
-    'noscript',
-    'del',
-    'ins',
-    'caption',
-    'col',
-    'colgroup',
-    'table',
-    'thead',
-    'tbody',
-    'td',
-    'th',
-    'tr',
-    'button',
-    'datalist',
-    'fieldset',
-    'form',
-    'input',
-    'label',
-    'legend',
-    'meter',
-    'optgroup',
-    'option',
-    'output',
-    'progress',
-    'select',
-    'textarea',
-    'details',
-    'dialog',
-    'menu',
-    'menuitem',
-    'summary',
-    'content',
-    'element',
-    'shadow',
-    'template',
-    'blockquote',
-    'iframe',
-    'tfoot'
-]);
-/**
- * this list is intentionally selective, only covering SVG elements that may
- * contain child elements.
- */
-const SVGTagSet = new Set([
-    'svg',
-    'animate',
-    'circle',
-    'clippath',
-    'cursor',
-    'defs',
-    'desc',
-    'ellipse',
-    'filter',
-    'font-face',
-    'foreignObject',
-    'g',
-    'glyph',
-    'image',
-    'line',
-    'marker',
-    'mask',
-    'missing-glyph',
-    'path',
-    'pattern',
-    'polygon',
-    'polyline',
-    'rect',
-    'switch',
-    'symbol',
-    'text',
-    'textpath',
-    'tspan',
-    'use',
-    'view'
-]);
-const VoidTagSet = new Set([
-    'area',
-    'base',
-    'br',
-    'col',
-    'embed',
-    'hr',
-    'img',
-    'input',
-    'link',
-    'meta',
-    'param',
-    'source',
-    'track',
-    'wbr'
-]);
-const isVoidTag = (tag) => VoidTagSet.has(tag);
-const isHTMLTag = (tag) => HTMLTagSet.has(tag);
-const isSVGTag = (tag) => SVGTagSet.has(tag);
+// Make a map and return a function for checking if a key
+// is in that map.
+//
+// IMPORTANT: all calls of this function must be prefixed with /*#__PURE__*/
+// So that rollup can tree-shake them if necessary.
+function makeMap(str, expectsLowerCase) {
+    const map = Object.create(null);
+    const list = str.split(',');
+    for (let i = 0; i < list.length; i++) {
+        map[list[i]] = true;
+    }
+    return expectsLowerCase ? val => !!map[val.toLowerCase()] : val => !!map[val];
+}
+
+// https://developer.mozilla.org/en-US/docs/Web/HTML/Element
+const HTML_TAGS = 'html,body,base,head,link,meta,style,title,address,article,aside,footer,' +
+    'header,h1,h2,h3,h4,h5,h6,hgroup,nav,section,div,dd,dl,dt,figcaption,' +
+    'figure,picture,hr,img,li,main,ol,p,pre,ul,a,b,abbr,bdi,bdo,br,cite,code,' +
+    'data,dfn,em,i,kbd,mark,q,rp,rt,rtc,ruby,s,samp,small,span,strong,sub,sup,' +
+    'time,u,var,wbr,area,audio,map,track,video,embed,object,param,source,' +
+    'canvas,script,noscript,del,ins,caption,col,colgroup,table,thead,tbody,td,' +
+    'th,tr,button,datalist,fieldset,form,input,label,legend,meter,optgroup,' +
+    'option,output,progress,select,textarea,details,dialog,menu,menuitem,' +
+    'summary,content,element,shadow,template,blockquote,iframe,tfoot';
+// https://developer.mozilla.org/en-US/docs/Web/SVG/Element
+const SVG_TAGS = 'svg,animate,animateMotion,animateTransform,circle,clipPath,color-profile,' +
+    'defs,desc,discard,ellipse,feBlend,feColorMatrix,feComponentTransfer,' +
+    'feComposite,feConvolveMatrix,feDiffuseLighting,feDisplacementMap,' +
+    'feDistanceLight,feDropShadow,feFlood,feFuncA,feFuncB,feFuncG,feFuncR,' +
+    'feGaussianBlur,feImage,feMerge,feMergeNode,feMorphology,feOffset,' +
+    'fePointLight,feSpecularLighting,feSpotLight,feTile,feTurbulence,filter,' +
+    'foreignObject,g,hatch,hatchpath,image,line,lineGradient,marker,mask,' +
+    'mesh,meshgradient,meshpatch,meshrow,metadata,mpath,path,pattern,' +
+    'polygon,polyline,radialGradient,rect,set,solidcolor,stop,switch,symbol,' +
+    'text,textPath,title,tspan,unknown,use,view';
+const VOID_TAGS = 'area,base,br,col,embed,hr,img,input,link,meta,param,source,track,wbr';
+const isHTMLTag = /*#__PURE__*/ makeMap(HTML_TAGS);
+const isSVGTag = /*#__PURE__*/ makeMap(SVG_TAGS);
+const isVoidTag = /*#__PURE__*/ makeMap(VOID_TAGS);
 
 const parserOptionsMinimal = {
     isVoidTag,
@@ -2521,21 +2387,22 @@ function createDOMCompilerError(code, loc) {
     return compilerCore.createCompilerError(code, loc,  DOMErrorMessages );
 }
 const DOMErrorMessages = {
-    [51 /* X_V_HTML_NO_EXPRESSION */]: `v-html is missing expression.`,
-    [52 /* X_V_HTML_WITH_CHILDREN */]: `v-html will override element children.`,
-    [53 /* X_V_TEXT_NO_EXPRESSION */]: `v-text is missing expression.`,
-    [54 /* X_V_TEXT_WITH_CHILDREN */]: `v-text will override element children.`,
-    [55 /* X_V_MODEL_ON_INVALID_ELEMENT */]: `v-model can only be used on <input>, <textarea> and <select> elements.`,
-    [56 /* X_V_MODEL_ARG_ON_ELEMENT */]: `v-model argument is not supported on plain elements.`
+    [53 /* X_V_HTML_NO_EXPRESSION */]: `v-html is missing expression.`,
+    [54 /* X_V_HTML_WITH_CHILDREN */]: `v-html will override element children.`,
+    [55 /* X_V_TEXT_NO_EXPRESSION */]: `v-text is missing expression.`,
+    [56 /* X_V_TEXT_WITH_CHILDREN */]: `v-text will override element children.`,
+    [57 /* X_V_MODEL_ON_INVALID_ELEMENT */]: `v-model can only be used on <input>, <textarea> and <select> elements.`,
+    [58 /* X_V_MODEL_ARG_ON_ELEMENT */]: `v-model argument is not supported on plain elements.`,
+    [59 /* X_V_MODEL_ON_FILE_INPUT_ELEMENT */]: `v-model cannot used on file inputs since they are read-only. Use a v-on:change listener instead.`
 };
 
 const transformVHtml = (dir, node, context) => {
     const { exp, loc } = dir;
     if (!exp) {
-        context.onError(createDOMCompilerError(51 /* X_V_HTML_NO_EXPRESSION */, loc));
+        context.onError(createDOMCompilerError(53 /* X_V_HTML_NO_EXPRESSION */, loc));
     }
     if (node.children.length) {
-        context.onError(createDOMCompilerError(52 /* X_V_HTML_WITH_CHILDREN */, loc));
+        context.onError(createDOMCompilerError(54 /* X_V_HTML_WITH_CHILDREN */, loc));
         node.children.length = 0;
     }
     return {
@@ -2549,10 +2416,10 @@ const transformVHtml = (dir, node, context) => {
 const transformVText = (dir, node, context) => {
     const { exp, loc } = dir;
     if (!exp) {
-        context.onError(createDOMCompilerError(53 /* X_V_TEXT_NO_EXPRESSION */, loc));
+        context.onError(createDOMCompilerError(55 /* X_V_TEXT_NO_EXPRESSION */, loc));
     }
     if (node.children.length) {
-        context.onError(createDOMCompilerError(54 /* X_V_TEXT_WITH_CHILDREN */, loc));
+        context.onError(createDOMCompilerError(56 /* X_V_TEXT_WITH_CHILDREN */, loc));
         node.children.length = 0;
     }
     return {
@@ -2568,23 +2435,32 @@ const V_MODEL_CHECKBOX = Symbol( ``);
 const V_MODEL_TEXT = Symbol( ``);
 const V_MODEL_SELECT = Symbol( ``);
 const V_MODEL_DYNAMIC = Symbol( ``);
+const V_ON_WITH_MODIFIERS = Symbol( ``);
+const V_ON_WITH_KEYS = Symbol( ``);
 compilerCore.registerRuntimeHelpers({
     [V_MODEL_RADIO]: `vModelRadio`,
     [V_MODEL_CHECKBOX]: `vModelCheckbox`,
     [V_MODEL_TEXT]: `vModelText`,
     [V_MODEL_SELECT]: `vModelSelect`,
-    [V_MODEL_DYNAMIC]: `vModelDynamic`
+    [V_MODEL_DYNAMIC]: `vModelDynamic`,
+    [V_ON_WITH_MODIFIERS]: `withModifiers`,
+    [V_ON_WITH_KEYS]: `withKeys`
 });
 
 const transformModel = (dir, node, context) => {
-    const res = compilerCore.transformModel(dir, node, context);
+    const baseResult = compilerCore.transformModel(dir, node, context);
+    // base transform has errors
+    if (!baseResult.props.length) {
+        return baseResult;
+    }
     const { tag, tagType } = node;
     if (tagType === 0 /* ELEMENT */) {
         if (dir.arg) {
-            context.onError(createDOMCompilerError(56 /* X_V_MODEL_ARG_ON_ELEMENT */, dir.arg.loc));
+            context.onError(createDOMCompilerError(58 /* X_V_MODEL_ARG_ON_ELEMENT */, dir.arg.loc));
         }
         if (tag === 'input' || tag === 'textarea' || tag === 'select') {
             let directiveToUse = V_MODEL_TEXT;
+            let isInvalidType = false;
             if (tag === 'input') {
                 const type = compilerCore.findProp(node, `type`);
                 if (type) {
@@ -2600,6 +2476,10 @@ const transformModel = (dir, node, context) => {
                             case 'checkbox':
                                 directiveToUse = V_MODEL_CHECKBOX;
                                 break;
+                            case 'file':
+                                isInvalidType = true;
+                                context.onError(createDOMCompilerError(59 /* X_V_MODEL_ON_FILE_INPUT_ELEMENT */, dir.loc));
+                                break;
                         }
                     }
                 }
@@ -2609,14 +2489,67 @@ const transformModel = (dir, node, context) => {
             }
             // inject runtime directive
             // by returning the helper symbol via needRuntime
-            // the import will replaced a resovleDirective call.
-            res.needRuntime = context.helper(directiveToUse);
+            // the import will replaced a resolveDirective call.
+            if (!isInvalidType) {
+                baseResult.needRuntime = context.helper(directiveToUse);
+            }
         }
         else {
-            context.onError(createDOMCompilerError(55 /* X_V_MODEL_ON_INVALID_ELEMENT */, dir.loc));
+            context.onError(createDOMCompilerError(57 /* X_V_MODEL_ON_INVALID_ELEMENT */, dir.loc));
         }
     }
-    return res;
+    return baseResult;
+};
+
+const isEventOptionModifier = /*#__PURE__*/ makeMap(`passive,once,capture`);
+const isNonKeyModifier = /*#__PURE__*/ makeMap(
+// event propagation management
+`stop,prevent,self,` +
+    // system modifiers + exact
+    `ctrl,shift,alt,meta,exact,` +
+    // mouse
+    `left,middle,right`);
+const isKeyboardEvent = /*#__PURE__*/ makeMap(`onkeyup,onkeydown,onkeypress`, true);
+const transformOn = (dir, node, context) => {
+    return compilerCore.transformOn(dir, node, context, baseResult => {
+        const { modifiers } = dir;
+        if (!modifiers.length)
+            return baseResult;
+        let { key, value: handlerExp } = baseResult.props[0];
+        // modifiers for addEventListener() options, e.g. .passive & .capture
+        const eventOptionModifiers = modifiers.filter(isEventOptionModifier);
+        // modifiers that needs runtime guards
+        const runtimeModifiers = modifiers.filter(m => !isEventOptionModifier(m));
+        // built-in modifiers that are not keys
+        const nonKeyModifiers = runtimeModifiers.filter(isNonKeyModifier);
+        if (nonKeyModifiers.length) {
+            handlerExp = compilerCore.createCallExpression(context.helper(V_ON_WITH_MODIFIERS), [
+                handlerExp,
+                JSON.stringify(nonKeyModifiers)
+            ]);
+        }
+        const keyModifiers = runtimeModifiers.filter(m => !isNonKeyModifier(m));
+        if (keyModifiers.length &&
+            // if event name is dynamic, always wrap with keys guard
+            (key.type === 8 /* COMPOUND_EXPRESSION */ ||
+                !key.isStatic ||
+                isKeyboardEvent(key.content))) {
+            handlerExp = compilerCore.createCallExpression(context.helper(V_ON_WITH_KEYS), [
+                handlerExp,
+                JSON.stringify(keyModifiers)
+            ]);
+        }
+        if (eventOptionModifiers.length) {
+            handlerExp = compilerCore.createObjectExpression([
+                compilerCore.createObjectProperty('handler', handlerExp),
+                compilerCore.createObjectProperty('options', compilerCore.createObjectExpression(eventOptionModifiers.map(modifier => compilerCore.createObjectProperty(modifier, compilerCore.createSimpleExpression('true', false)))))
+            ]);
+        }
+        return {
+            props: [compilerCore.createObjectProperty(key, handlerExp)],
+            needRuntime: false
+        };
+    });
 };
 
 function compile(template, options = {}) {
@@ -2629,6 +2562,7 @@ function compile(template, options = {}) {
             html: transformVHtml,
             text: transformVText,
             model: transformModel,
+            on: transformOn,
             ...(options.directiveTransforms || {})
         }
     });
@@ -2643,3 +2577,6 @@ Object.keys(compilerCore).forEach(function (k) {
   });
 });
 exports.compile = compile;
+exports.isHTMLTag = isHTMLTag;
+exports.isSVGTag = isSVGTag;
+exports.isVoidTag = isVoidTag;

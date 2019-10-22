@@ -57,8 +57,10 @@ module.exports = {
 }
 
 function genAlias () {
-  const alias = {}
-  const runtimePackageNames = ['reactivity', 'runtime-core', 'runtime-dom', 'vue']
+  const alias = {
+    '@vue/vue': path.resolve(__dirname, './packages/vue/dist/vue.esm-browser.js')
+  }
+  const runtimePackageNames = ['reactivity', 'runtime-core', 'runtime-dom']
   runtimePackageNames.forEach((name) => {
     alias[`@vue/${name}`] = path.resolve(__dirname, `./packages/${name}/dist/${name}.esm-bundler.js`)
   })

@@ -2,23 +2,24 @@ import { track, trigger } from './effect'
 import { OperationTypes } from './operations'
 import { isObject } from '@vue/shared'
 import { reactive } from './reactive'
-
-export const refSymbol = Symbol(__DEV__ ? 'refSymbol' : undefined)
+import { ComputedRef } from './computed'
 
 export interface Ref<T = any> {
-  [refSymbol]: true
+  _isRef: true
   value: UnwrapRef<T>
 }
 
 const convert = (val: any): any => (isObject(val) ? reactive(val) : val)
 
-export function ref<T>(raw: T): Ref<T> {
+export function ref<T extends Ref>(raw: T): T
+export function ref<T>(raw: T): Ref<T>
+export function ref(raw: any) {
   if (isRef(raw)) {
     return raw
   }
   raw = convert(raw)
   const v = {
-    [refSymbol]: true,
+    _isRef: true,
     get value() {
       track(v, OperationTypes.GET, '')
       return raw
@@ -28,11 +29,11 @@ export function ref<T>(raw: T): Ref<T> {
       trigger(v, OperationTypes.SET, '')
     }
   }
-  return v as Ref<T>
+  return v as Ref
 }
 
 export function isRef(v: any): v is Ref {
-  return v ? v[refSymbol] === true : false
+  return v ? v._isRef === true : false
 }
 
 export function toRefs<T extends object>(
@@ -50,7 +51,7 @@ function toProxyRef<T extends object, K extends keyof T>(
   key: K
 ): Ref<T[K]> {
   return {
-    [refSymbol]: true,
+    _isRef: true,
     get value(): any {
       return object[key]
     },
@@ -69,17 +70,16 @@ type BailTypes =
 
 // Recursively unwraps nested value bindings.
 export type UnwrapRef<T> = {
+  cRef: T extends ComputedRef<infer V> ? UnwrapRef<V> : T
   ref: T extends Ref<infer V> ? UnwrapRef<V> : T
   array: T extends Array<infer V> ? Array<UnwrapRef<V>> : T
   object: { [K in keyof T]: UnwrapRef<T[K]> }
-  stop: T
-}[T extends Ref
-  ? 'ref'
-  : T extends Array<any>
-    ? 'array'
-    : T extends BailTypes
-      ? 'stop' // bail out on types that shouldn't be unwrapped
-      : T extends object ? 'object' : 'stop']
-
-// only unwrap nested ref
-export type UnwrapNestedRefs<T> = T extends Ref ? T : UnwrapRef<T>
+}[T extends ComputedRef<any>
+  ? 'cRef'
+  : T extends Ref
+    ? 'ref'
+    : T extends Array<any>
+      ? 'array'
+      : T extends BailTypes
+        ? 'ref' // bail out on types that shouldn't be unwrapped
+        : T extends object ? 'object' : 'ref']

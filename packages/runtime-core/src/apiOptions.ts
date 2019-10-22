@@ -2,7 +2,8 @@ import {
   ComponentInternalInstance,
   Data,
   Component,
-  SetupContext
+  SetupContext,
+  RenderFunction
 } from './component'
 import {
   isFunction,
@@ -10,7 +11,8 @@ import {
   isString,
   isObject,
   isArray,
-  EMPTY_OBJ
+  EMPTY_OBJ,
+  NOOP
 } from '@vue/shared'
 import { computed } from './apiReactivity'
 import { watch, WatchOptions, CleanupRegistrator } from './apiWatch'
@@ -24,12 +26,17 @@ import {
   onRenderTracked,
   onBeforeUnmount,
   onUnmounted,
-  onRenderTriggered
+  onRenderTriggered,
+  DebuggerHook,
+  ErrorCapturedHook
 } from './apiLifecycle'
-import { DebuggerEvent, reactive } from '@vue/reactivity'
+import {
+  reactive,
+  ComputedGetter,
+  WritableComputedOptions
+} from '@vue/reactivity'
 import { ComponentObjectPropsOptions, ExtractPropTypes } from './componentProps'
 import { Directive } from './directives'
-import { VNodeChild } from './vnode'
 import { ComponentPublicInstance } from './componentProxy'
 import { warn } from './warning'
 
@@ -44,7 +51,7 @@ interface ComponentOptionsBase<
     this: null,
     props: Props,
     ctx: SetupContext
-  ) => RawBindings | (() => VNodeChild) | void
+  ) => RawBindings | RenderFunction | void
   name?: string
   template?: string
   // Note: we are intentionally using the signature-less `Function` type here
@@ -97,14 +104,10 @@ export type ComponentOptions =
 // TODO legacy component definition also supports constructors with .options
 type LegacyComponent = ComponentOptions
 
-export interface ComputedOptions {
-  [key: string]:
-    | Function
-    | {
-        get: Function
-        set: Function
-      }
-}
+export type ComputedOptions = Record<
+  string,
+  ComputedGetter<any> | WritableComputedOptions<any>
+>
 
 export interface MethodOptions {
   [key: string]: Function
@@ -171,9 +174,9 @@ export interface LegacyOptions<
   deactivated?(): void
   beforeUnmount?(): void
   unmounted?(): void
-  renderTracked?(e: DebuggerEvent): void
-  renderTriggered?(e: DebuggerEvent): void
-  errorCaptured?(): boolean | void
+  renderTracked?: DebuggerHook
+  renderTriggered?: DebuggerHook
+  errorCaptured?: ErrorCapturedHook
 }
 
 export function applyOptions(
@@ -245,12 +248,28 @@ export function applyOptions(
   if (computedOptions) {
     for (const key in computedOptions) {
       const opt = (computedOptions as ComputedOptions)[key]
-      renderContext[key] = isFunction(opt)
-        ? computed(opt.bind(ctx))
-        : computed({
-            get: opt.get.bind(ctx),
-            set: opt.set.bind(ctx)
+
+      if (isFunction(opt)) {
+        renderContext[key] = computed(opt.bind(ctx))
+      } else {
+        const { get, set } = opt
+        if (isFunction(get)) {
+          renderContext[key] = computed({
+            get: get.bind(ctx),
+            set: isFunction(set)
+              ? set.bind(ctx)
+              : __DEV__
+                ? () => {
+                    warn(
+                      `Computed property "${key}" was assigned to but it has no setter.`
+                    )
+                  }
+                : NOOP
           })
+        } else if (__DEV__) {
+          warn(`Computed property "${key}" has no getter.`)
+        }
+      }
     }
   }
   if (methods) {

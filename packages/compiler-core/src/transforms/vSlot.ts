@@ -23,7 +23,7 @@ import {
 } from '../ast'
 import { TransformContext, NodeTransform } from '../transform'
 import { createCompilerError, ErrorCodes } from '../errors'
-import { findDir, isTemplateNode, assert, isVSlot } from '../utils'
+import { findDir, isTemplateNode, assert, isVSlot, hasScopeRef } from '../utils'
 import { CREATE_SLOTS, RENDER_LIST } from '../runtimeHelpers'
 import { parseForExpression, createForLoopParams } from './vFor'
 
@@ -108,9 +108,12 @@ export function buildSlots(
 
   // If the slot is inside a v-for or another v-slot, force it to be dynamic
   // since it likely uses a scope variable.
-  // TODO: This can be further optimized to only make it dynamic when the slot
-  // actually uses the scope variables.
-  let hasDynamicSlots = context.scopes.vSlot > 1 || context.scopes.vFor > 0
+  let hasDynamicSlots = context.scopes.vSlot > 0 || context.scopes.vFor > 0
+  // with `prefixIdentifiers: true`, this can be further optimized to make
+  // it dynamic only when the slot actually uses the scope variables.
+  if (!__BROWSER__ && context.prefixIdentifiers) {
+    hasDynamicSlots = hasScopeRef(node, context.identifiers)
+  }
 
   // 1. Check for default slot with slotProps on component itself.
   //    <Comp v-slot="{ prop }"/>

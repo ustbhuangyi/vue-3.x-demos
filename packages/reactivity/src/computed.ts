@@ -1,5 +1,5 @@
-import { effect, ReactiveEffect, activeReactiveEffectStack } from './effect'
-import { Ref, refSymbol, UnwrapRef } from './ref'
+import { effect, ReactiveEffect, effectStack } from './effect'
+import { Ref, UnwrapRef } from './ref'
 import { isFunction, NOOP } from '@vue/shared'
 
 export interface ComputedRef<T> extends WritableComputedRef<T> {
@@ -7,24 +7,27 @@ export interface ComputedRef<T> extends WritableComputedRef<T> {
 }
 
 export interface WritableComputedRef<T> extends Ref<T> {
-  readonly effect: ReactiveEffect
+  readonly effect: ReactiveEffect<T>
 }
+
+export type ComputedGetter<T> = () => T
+export type ComputedSetter<T> = (v: T) => void
 
 export interface WritableComputedOptions<T> {
-  get: () => T
-  set: (v: T) => void
+  get: ComputedGetter<T>
+  set: ComputedSetter<T>
 }
 
-export function computed<T>(getter: () => T): ComputedRef<T>
+export function computed<T>(getter: ComputedGetter<T>): ComputedRef<T>
 export function computed<T>(
   options: WritableComputedOptions<T>
 ): WritableComputedRef<T>
 export function computed<T>(
-  getterOrOptions: (() => T) | WritableComputedOptions<T>
+  getterOrOptions: ComputedGetter<T> | WritableComputedOptions<T>
 ): any {
   const isReadonly = isFunction(getterOrOptions)
   const getter = isReadonly
-    ? (getterOrOptions as (() => T))
+    ? (getterOrOptions as ComputedGetter<T>)
     : (getterOrOptions as WritableComputedOptions<T>).get
   const setter = isReadonly
     ? __DEV__
@@ -46,7 +49,7 @@ export function computed<T>(
     }
   })
   return {
-    [refSymbol]: true,
+    _isRef: true,
     // expose effect so computed can be stopped
     effect: runner,
     get value() {
@@ -67,15 +70,15 @@ export function computed<T>(
 }
 
 function trackChildRun(childRunner: ReactiveEffect) {
-  const parentRunner =
-    activeReactiveEffectStack[activeReactiveEffectStack.length - 1]
-  if (parentRunner) {
-    for (let i = 0; i < childRunner.deps.length; i++) {
-      const dep = childRunner.deps[i]
-      if (!dep.has(parentRunner)) {
-        dep.add(parentRunner)
-        parentRunner.deps.push(dep)
-      }
+  if (effectStack.length === 0) {
+    return
+  }
+  const parentRunner = effectStack[effectStack.length - 1]
+  for (let i = 0; i < childRunner.deps.length; i++) {
+    const dep = childRunner.deps[i]
+    if (!dep.has(parentRunner)) {
+      dep.add(parentRunner)
+      parentRunner.deps.push(dep)
     }
   }
 }

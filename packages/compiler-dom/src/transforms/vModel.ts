@@ -15,7 +15,12 @@ import {
 } from '../runtimeHelpers'
 
 export const transformModel: DirectiveTransform = (dir, node, context) => {
-  const res = baseTransform(dir, node, context)
+  const baseResult = baseTransform(dir, node, context)
+  // base transform has errors
+  if (!baseResult.props.length) {
+    return baseResult
+  }
+
   const { tag, tagType } = node
   if (tagType === ElementTypes.ELEMENT) {
     if (dir.arg) {
@@ -29,6 +34,7 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
 
     if (tag === 'input' || tag === 'textarea' || tag === 'select') {
       let directiveToUse = V_MODEL_TEXT
+      let isInvalidType = false
       if (tag === 'input') {
         const type = findProp(node, `type`)
         if (type) {
@@ -43,6 +49,15 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
               case 'checkbox':
                 directiveToUse = V_MODEL_CHECKBOX
                 break
+              case 'file':
+                isInvalidType = true
+                context.onError(
+                  createDOMCompilerError(
+                    DOMErrorCodes.X_V_MODEL_ON_FILE_INPUT_ELEMENT,
+                    dir.loc
+                  )
+                )
+                break
             }
           }
         }
@@ -51,8 +66,10 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
       }
       // inject runtime directive
       // by returning the helper symbol via needRuntime
-      // the import will replaced a resovleDirective call.
-      res.needRuntime = context.helper(directiveToUse)
+      // the import will replaced a resolveDirective call.
+      if (!isInvalidType) {
+        baseResult.needRuntime = context.helper(directiveToUse)
+      }
     } else {
       context.onError(
         createDOMCompilerError(
@@ -62,5 +79,5 @@ export const transformModel: DirectiveTransform = (dir, node, context) => {
       )
     }
   }
-  return res
+  return baseResult
 }

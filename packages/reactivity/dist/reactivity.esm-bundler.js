@@ -1,5 +1,21 @@
-const EMPTY_OBJ =  Object.freeze({})
-    ;
+// Make a map and return a function for checking if a key
+// is in that map.
+//
+// IMPORTANT: all calls of this function must be prefixed with /*#__PURE__*/
+// So that rollup can tree-shake them if necessary.
+function makeMap(str, expectsLowerCase) {
+    const map = Object.create(null);
+    const list = str.split(',');
+    for (let i = 0; i < list.length; i++) {
+        map[list[i]] = true;
+    }
+    return expectsLowerCase ? val => !!map[val.toLowerCase()] : val => !!map[val];
+}
+
+const EMPTY_OBJ = process.env.NODE_ENV !== 'production'
+    ? Object.freeze({})
+    : {};
+const NOOP = () => { };
 const extend = (a, b) => {
     for (const key in b) {
         a[key] = b[key];
@@ -50,23 +66,31 @@ function createGetter(isReadonly) {
 }
 function set(target, key, value, receiver) {
     value = toRaw(value);
-    const hadKey = hasOwn(target, key);
     const oldValue = target[key];
     if (isRef(oldValue) && !isRef(value)) {
         oldValue.value = value;
         return true;
     }
+    const hadKey = hasOwn(target, key);
     const result = Reflect.set(target, key, value, receiver);
     // don't trigger if target is something up in the prototype chain of original
     if (target === toRaw(receiver)) {
         /* istanbul ignore else */
-        {
+        if (process.env.NODE_ENV !== 'production') {
             const extraInfo = { oldValue, newValue: value };
             if (!hadKey) {
                 trigger(target, "add" /* ADD */, key, extraInfo);
             }
             else if (value !== oldValue) {
                 trigger(target, "set" /* SET */, key, extraInfo);
+            }
+        }
+        else {
+            if (!hadKey) {
+                trigger(target, "add" /* ADD */, key);
+            }
+            else if (value !== oldValue) {
+                trigger(target, "set" /* SET */, key);
             }
         }
     }
@@ -78,8 +102,11 @@ function deleteProperty(target, key) {
     const result = Reflect.deleteProperty(target, key);
     if (result && hadKey) {
         /* istanbul ignore else */
-        {
+        if (process.env.NODE_ENV !== 'production') {
             trigger(target, "delete" /* DELETE */, key, { oldValue });
+        }
+        else {
+            trigger(target, "delete" /* DELETE */, key);
         }
     }
     return result;
@@ -104,7 +131,7 @@ const readonlyHandlers = {
     get: createGetter(true),
     set(target, key, value, receiver) {
         if (LOCKED) {
-            {
+            if (process.env.NODE_ENV !== 'production') {
                 console.warn(`Set operation on key "${String(key)}" failed: target is readonly.`, target);
             }
             return true;
@@ -115,7 +142,7 @@ const readonlyHandlers = {
     },
     deleteProperty(target, key) {
         if (LOCKED) {
-            {
+            if (process.env.NODE_ENV !== 'production') {
                 console.warn(`Delete operation on key "${String(key)}" failed: target is readonly.`, target);
             }
             return true;
@@ -159,8 +186,11 @@ function add(value) {
     const result = proto.add.call(target, value);
     if (!hadKey) {
         /* istanbul ignore else */
-        {
+        if (process.env.NODE_ENV !== 'production') {
             trigger(target, "add" /* ADD */, value, { value });
+        }
+        else {
+            trigger(target, "add" /* ADD */, value);
         }
     }
     return result;
@@ -174,13 +204,21 @@ function set$1(key, value) {
     const result = proto.set.call(target, key, value);
     if (value !== oldValue) {
         /* istanbul ignore else */
-        {
+        if (process.env.NODE_ENV !== 'production') {
             const extraInfo = { oldValue, newValue: value };
             if (!hadKey) {
                 trigger(target, "add" /* ADD */, key, extraInfo);
             }
             else {
                 trigger(target, "set" /* SET */, key, extraInfo);
+            }
+        }
+        else {
+            if (!hadKey) {
+                trigger(target, "add" /* ADD */, key);
+            }
+            else {
+                trigger(target, "set" /* SET */, key);
             }
         }
     }
@@ -195,8 +233,11 @@ function deleteEntry(key) {
     const result = proto.delete.call(target, key);
     if (hadKey) {
         /* istanbul ignore else */
-        {
+        if (process.env.NODE_ENV !== 'production') {
             trigger(target, "delete" /* DELETE */, key, { oldValue });
+        }
+        else {
+            trigger(target, "delete" /* DELETE */, key);
         }
     }
     return result;
@@ -210,8 +251,11 @@ function clear() {
     const result = proto.clear.call(target);
     if (hadItems) {
         /* istanbul ignore else */
-        {
+        if (process.env.NODE_ENV !== 'production') {
             trigger(target, "clear" /* CLEAR */, void 0, { oldTarget });
+        }
+        else {
+            trigger(target, "clear" /* CLEAR */);
         }
     }
     return result;
@@ -264,7 +308,7 @@ function createIterableMethod(method, isReadonly) {
 function createReadonlyMethod(method, type) {
     return function (...args) {
         if (LOCKED) {
-            {
+            if (process.env.NODE_ENV !== 'production') {
                 const key = args[0] ? `on key "${args[0]}" ` : ``;
                 console.warn(`${capitalize(type)} operation ${key}failed: target is readonly.`, toRaw(this));
             }
@@ -333,11 +377,13 @@ const readonlyToRaw = new WeakMap();
 const readonlyValues = new WeakSet();
 const nonReactiveValues = new WeakSet();
 const collectionTypes = new Set([Set, Map, WeakMap, WeakSet]);
-const observableValueRE = /^\[object (?:Object|Array|Map|Set|WeakMap|WeakSet)\]$/;
+const isObservableType = /*#__PURE__*/ makeMap(['Object', 'Array', 'Map', 'Set', 'WeakMap', 'WeakSet']
+    .map(t => `[object ${t}]`)
+    .join(','));
 const canObserve = (value) => {
     return (!value._isVue &&
         !value._isVNode &&
-        observableValueRE.test(toTypeString(value)) &&
+        isObservableType(toTypeString(value)) &&
         !nonReactiveValues.has(value));
 };
 function reactive(target) {
@@ -361,7 +407,7 @@ function readonly(target) {
 }
 function createReactiveObject(target, toProxy, toRaw, baseHandlers, collectionHandlers) {
     if (!isObject(target)) {
-        {
+        if (process.env.NODE_ENV !== 'production') {
             console.warn(`value cannot be made reactive: ${String(target)}`);
         }
         return target;
@@ -408,8 +454,8 @@ function markNonReactive(value) {
     return value;
 }
 
-const effectSymbol = Symbol( 'effect' );
-const activeReactiveEffectStack = [];
+const effectSymbol = Symbol(process.env.NODE_ENV !== 'production' ? 'effect' : void 0);
+const effectStack = [];
 const ITERATE_KEY = Symbol('iterate');
 function isEffect(fn) {
     return fn != null && fn[effectSymbol] === true;
@@ -452,14 +498,14 @@ function run(effect, fn, args) {
     if (!effect.active) {
         return fn(...args);
     }
-    if (activeReactiveEffectStack.indexOf(effect) === -1) {
+    if (!effectStack.includes(effect)) {
         cleanup(effect);
         try {
-            activeReactiveEffectStack.push(effect);
+            effectStack.push(effect);
             return fn(...args);
         }
         finally {
-            activeReactiveEffectStack.pop();
+            effectStack.pop();
         }
     }
 }
@@ -480,33 +526,31 @@ function resumeTracking() {
     shouldTrack = true;
 }
 function track(target, type, key) {
-    if (!shouldTrack) {
+    if (!shouldTrack || effectStack.length === 0) {
         return;
     }
-    const effect = activeReactiveEffectStack[activeReactiveEffectStack.length - 1];
-    if (effect) {
-        if (type === "iterate" /* ITERATE */) {
-            key = ITERATE_KEY;
-        }
-        let depsMap = targetMap.get(target);
-        if (depsMap === void 0) {
-            targetMap.set(target, (depsMap = new Map()));
-        }
-        let dep = depsMap.get(key);
-        if (dep === void 0) {
-            depsMap.set(key, (dep = new Set()));
-        }
-        if (!dep.has(effect)) {
-            dep.add(effect);
-            effect.deps.push(dep);
-            if ( effect.onTrack) {
-                effect.onTrack({
-                    effect,
-                    target,
-                    type,
-                    key
-                });
-            }
+    const effect = effectStack[effectStack.length - 1];
+    if (type === "iterate" /* ITERATE */) {
+        key = ITERATE_KEY;
+    }
+    let depsMap = targetMap.get(target);
+    if (depsMap === void 0) {
+        targetMap.set(target, (depsMap = new Map()));
+    }
+    let dep = depsMap.get(key);
+    if (dep === void 0) {
+        depsMap.set(key, (dep = new Set()));
+    }
+    if (!dep.has(effect)) {
+        dep.add(effect);
+        effect.deps.push(dep);
+        if (process.env.NODE_ENV !== 'production' && effect.onTrack) {
+            effect.onTrack({
+                effect,
+                target,
+                type,
+                key
+            });
         }
     }
 }
@@ -556,7 +600,7 @@ function addRunners(effects, computedRunners, effectsToAdd) {
     }
 }
 function scheduleRun(effect, target, type, key, extraInfo) {
-    if ( effect.onTrigger) {
+    if (process.env.NODE_ENV !== 'production' && effect.onTrigger) {
         effect.onTrigger(extend({
             effect,
             target,
@@ -572,7 +616,6 @@ function scheduleRun(effect, target, type, key, extraInfo) {
     }
 }
 
-const refSymbol = Symbol( 'refSymbol' );
 const convert = (val) => (isObject(val) ? reactive(val) : val);
 function ref(raw) {
     if (isRef(raw)) {
@@ -580,7 +623,7 @@ function ref(raw) {
     }
     raw = convert(raw);
     const v = {
-        [refSymbol]: true,
+        _isRef: true,
         get value() {
             track(v, "get" /* GET */, '');
             return raw;
@@ -593,7 +636,7 @@ function ref(raw) {
     return v;
 }
 function isRef(v) {
-    return v ? v[refSymbol] === true : false;
+    return v ? v._isRef === true : false;
 }
 function toRefs(object) {
     const ret = {};
@@ -604,7 +647,7 @@ function toRefs(object) {
 }
 function toProxyRef(object, key) {
     return {
-        [refSymbol]: true,
+        _isRef: true,
         get value() {
             return object[key];
         },
@@ -620,10 +663,11 @@ function computed(getterOrOptions) {
         ? getterOrOptions
         : getterOrOptions.get;
     const setter = isReadonly
-        ?  () => {
+        ? process.env.NODE_ENV !== 'production'
+            ? () => {
                 console.warn('Write operation failed: computed value is readonly');
             }
-            
+            : NOOP
         : getterOrOptions.set;
     let dirty = true;
     let value;
@@ -636,7 +680,7 @@ function computed(getterOrOptions) {
         }
     });
     return {
-        [refSymbol]: true,
+        _isRef: true,
         // expose effect so computed can be stopped
         effect: runner,
         get value() {
@@ -656,14 +700,15 @@ function computed(getterOrOptions) {
     };
 }
 function trackChildRun(childRunner) {
-    const parentRunner = activeReactiveEffectStack[activeReactiveEffectStack.length - 1];
-    if (parentRunner) {
-        for (let i = 0; i < childRunner.deps.length; i++) {
-            const dep = childRunner.deps[i];
-            if (!dep.has(parentRunner)) {
-                dep.add(parentRunner);
-                parentRunner.deps.push(dep);
-            }
+    if (effectStack.length === 0) {
+        return;
+    }
+    const parentRunner = effectStack[effectStack.length - 1];
+    for (let i = 0; i < childRunner.deps.length; i++) {
+        const dep = childRunner.deps[i];
+        if (!dep.has(parentRunner)) {
+            dep.add(parentRunner);
+            parentRunner.deps.push(dep);
         }
     }
 }

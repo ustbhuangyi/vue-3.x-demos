@@ -178,8 +178,9 @@ const nodeOps = {
     querySelector
 };
 
-const EMPTY_OBJ =  Object.freeze({})
-    ;
+const EMPTY_OBJ = process.env.NODE_ENV !== 'production'
+    ? Object.freeze({})
+    : {};
 const isOn = (key) => key[0] === 'o' && key[1] === 'n';
 
 function patchProp(el, key, nextValue, prevValue) {
@@ -219,7 +220,7 @@ function serializeElement(node, indent, depth) {
         const value = node.props[key];
         return isOn(key) || value == null ? `` : `${key}=${JSON.stringify(value)}`;
     })
-        .filter(_ => _)
+        .filter(Boolean)
         .join(' ');
     const padding = indent ? ` `.repeat(indent).repeat(depth) : ``;
     return (`${padding}<${node.tag}${props ? ` ${props}` : ``}>` +

@@ -3,6 +3,7 @@
 Object.defineProperty(exports, '__esModule', { value: true });
 
 var runtimeCore = require('@vue/runtime-core');
+var compilerDom = require('@vue/compiler-dom');
 
 const doc = document;
 const svgNS = 'http://www.w3.org/2000/svg';
@@ -53,52 +54,9 @@ const isOn = (key) => key[0] === 'o' && key[1] === 'n';
 const isArray = Array.isArray;
 const isString = (val) => typeof val === 'string';
 const isObject = (val) => val !== null && typeof val === 'object';
-/**
- * Check if two values are loosely equal - that is,
- * if they are plain objects, do they have the same shape?
- */
-function looseEqual(a, b) {
-    if (a === b)
-        return true;
-    const isObjectA = isObject(a);
-    const isObjectB = isObject(b);
-    if (isObjectA && isObjectB) {
-        try {
-            const isArrayA = isArray(a);
-            const isArrayB = isArray(b);
-            if (isArrayA && isArrayB) {
-                return (a.length === b.length &&
-                    a.every((e, i) => looseEqual(e, b[i])));
-            }
-            else if (a instanceof Date && b instanceof Date) {
-                return a.getTime() === b.getTime();
-            }
-            else if (!isArrayA && !isArrayB) {
-                const keysA = Object.keys(a);
-                const keysB = Object.keys(b);
-                return (keysA.length === keysB.length &&
-                    keysA.every(key => looseEqual(a[key], b[key])));
-            }
-            else {
-                /* istanbul ignore next */
-                return false;
-            }
-        }
-        catch (e) {
-            /* istanbul ignore next */
-            return false;
-        }
-    }
-    else if (!isObjectA && !isObjectB) {
-        return String(a) === String(b);
-    }
-    else {
-        return false;
-    }
-}
 
 function patchStyle(el, prev, next) {
-    const { style } = el;
+    const style = el.style;
     if (!next) {
         el.removeAttribute('style');
     }
@@ -119,30 +77,12 @@ function patchStyle(el, prev, next) {
     }
 }
 
-const xlinkNS = 'http://www.w3.org/1999/xlink';
-function isXlink(name) {
-    return name.charAt(5) === ':' && name.slice(0, 5) === 'xlink';
-}
-function getXlinkProp(name) {
-    return isXlink(name) ? name.slice(6, name.length) : '';
-}
-function patchAttr(el, key, value, isSVG) {
-    // isSVG short-circuits isXlink check
-    if (isSVG && isXlink(key)) {
-        if (value == null) {
-            el.removeAttributeNS(xlinkNS, getXlinkProp(key));
-        }
-        else {
-            el.setAttributeNS(xlinkNS, key, value);
-        }
+function patchAttr(el, key, value) {
+    if (value == null) {
+        el.removeAttribute(key);
     }
     else {
-        if (value == null) {
-            el.removeAttribute(key);
-        }
-        else {
-            el.setAttribute(key, value);
-        }
+        el.setAttribute(key, value);
     }
 }
 
@@ -200,8 +140,7 @@ function patchEvent(el, name, prevValue, nextValue, instance = null) {
     const nextOptions = nextValue && 'options' in nextValue && nextValue.options;
     const invoker = prevValue && prevValue.invoker;
     const value = nextValue && 'handler' in nextValue ? nextValue.handler : nextValue;
-    const persistent = nextValue && 'persistent' in nextValue && nextValue.persistent;
-    if (!persistent && (prevOptions || nextOptions)) {
+    if (prevOptions || nextOptions) {
         const prev = prevOptions || EMPTY_OBJ;
         const next = nextOptions || EMPTY_OBJ;
         if (prev.capture !== next.capture ||
@@ -242,16 +181,7 @@ function createInvoker(initialValue, instance) {
         // and the handler would only fire if the event passed to it was fired
         // AFTER it was attached.
         if (e.timeStamp >= invoker.lastUpdated - 1) {
-            const args = [e];
-            const value = invoker.value;
-            if (isArray(value)) {
-                for (let i = 0; i < value.length; i++) {
-                    runtimeCore.callWithAsyncErrorHandling(value[i], instance, 5 /* NATIVE_EVENT_HANDLER */, args);
-                }
-            }
-            else {
-                runtimeCore.callWithAsyncErrorHandling(value, instance, 5 /* NATIVE_EVENT_HANDLER */, args);
-            }
+            runtimeCore.callWithAsyncErrorHandling(invoker.value, instance, 5 /* NATIVE_EVENT_HANDLER */, [e]);
         }
     };
     invoker.value = initialValue;
@@ -281,7 +211,7 @@ function patchProp(el, key, nextValue, prevValue, isSVG, prevChildren, parentCom
                 patchDOMProp(el, key, nextValue, prevChildren, parentComponent, parentSuspense, unmountChildren);
             }
             else {
-                patchAttr(el, key, nextValue, isSVG);
+                patchAttr(el, key, nextValue);
             }
             break;
     }
@@ -358,17 +288,21 @@ const vModelCheckbox = {
         addEventListener(el, 'change', () => {
             const modelValue = el._modelValue;
             const elementValue = getValue(el);
+            const checked = el.checked;
             if (isArray(modelValue)) {
-                const i = looseIndexOf(modelValue, elementValue);
-                if (i > -1) {
-                    assign([...modelValue.slice(0, i), ...modelValue.slice(i + 1)]);
-                }
-                else {
+                const index = looseIndexOf(modelValue, elementValue);
+                const found = index !== -1;
+                if (checked && !found) {
                     assign(modelValue.concat(elementValue));
+                }
+                else if (!checked && found) {
+                    const filtered = [...modelValue];
+                    filtered.splice(index, 1);
+                    assign(filtered);
                 }
             }
             else {
-                assign(el.checked);
+                assign(checked);
             }
         });
     },
@@ -433,12 +367,47 @@ function setSelected(el, value) {
         el.selectedIndex = -1;
     }
 }
-function looseIndexOf(arr, val) {
-    for (let i = 0; i < arr.length; i++) {
-        if (looseEqual(arr[i], val))
-            return i;
+function looseEqual(a, b) {
+    if (a === b)
+        return true;
+    const isObjectA = isObject(a);
+    const isObjectB = isObject(b);
+    if (isObjectA && isObjectB) {
+        try {
+            const isArrayA = isArray(a);
+            const isArrayB = isArray(b);
+            if (isArrayA && isArrayB) {
+                return (a.length === b.length &&
+                    a.every((e, i) => looseEqual(e, b[i])));
+            }
+            else if (a instanceof Date && b instanceof Date) {
+                return a.getTime() === b.getTime();
+            }
+            else if (!isArrayA && !isArrayB) {
+                const keysA = Object.keys(a);
+                const keysB = Object.keys(b);
+                return (keysA.length === keysB.length &&
+                    keysA.every(key => looseEqual(a[key], b[key])));
+            }
+            else {
+                /* istanbul ignore next */
+                return false;
+            }
+        }
+        catch (e) {
+            /* istanbul ignore next */
+            return false;
+        }
     }
-    return -1;
+    else if (!isObjectA && !isObjectB) {
+        return String(a) === String(b);
+    }
+    else {
+        return false;
+    }
+}
+function looseIndexOf(arr, val) {
+    return arr.findIndex(item => looseEqual(item, val));
 }
 // retrieve raw value set via :value bindings
 function getValue(el) {
@@ -483,10 +452,69 @@ function callModelHook(el, binding, vnode, prevVNode, hook) {
     fn && fn(el, binding, vnode, prevVNode);
 }
 
+const systemModifiers = ['ctrl', 'shift', 'alt', 'meta'];
+const modifierGuards = {
+    stop: e => e.stopPropagation(),
+    prevent: e => e.preventDefault(),
+    self: e => e.target !== e.currentTarget,
+    ctrl: e => !e.ctrlKey,
+    shift: e => !e.shiftKey,
+    alt: e => !e.altKey,
+    meta: e => !e.metaKey,
+    left: e => 'button' in e && e.button !== 0,
+    middle: e => 'button' in e && e.button !== 1,
+    right: e => 'button' in e && e.button !== 2,
+    exact: (e, modifiers) => systemModifiers.some(m => e[`${m}Key`] && !modifiers.includes(m))
+};
+const withModifiers = (fn, modifiers) => {
+    return (event) => {
+        for (let i = 0; i < modifiers.length; i++) {
+            const guard = modifierGuards[modifiers[i]];
+            if (guard && guard(event, modifiers))
+                return;
+        }
+        return fn(event);
+    };
+};
+// Kept for 2.x compat.
+// Note: IE11 compat for `spacebar` and `del` is removed for now.
+const keyNames = {
+    esc: 'escape',
+    space: ' ',
+    up: 'arrowup',
+    left: 'arrowleft',
+    right: 'arrowright',
+    down: 'arrowdown',
+    delete: 'backspace'
+};
+const withKeys = (fn, modifiers) => {
+    return (event) => {
+        if (!('key' in event))
+            return;
+        const eventKey = event.key.toLowerCase();
+        if (
+        // None of the provided key modifiers match the current event key
+        !modifiers.some(k => k === eventKey || keyNames[k] === eventKey)) {
+            return;
+        }
+        return fn(event);
+    };
+};
+
 const { render, createApp } = runtimeCore.createRenderer({
     patchProp,
     ...nodeOps
 });
+const wrappedCreateApp = () => {
+    const app = createApp();
+    // inject `isNativeTag` dev only
+    Object.defineProperty(app.config, 'isNativeTag', {
+        value: (tag) => compilerDom.isHTMLTag(tag) || compilerDom.isSVGTag(tag),
+        writable: false
+    });
+    return app;
+};
+const exportedCreateApp =  wrappedCreateApp ;
 
 Object.keys(runtimeCore).forEach(function (k) {
   if (k !== 'default') Object.defineProperty(exports, k, {
@@ -496,10 +524,12 @@ Object.keys(runtimeCore).forEach(function (k) {
     }
   });
 });
-exports.createApp = createApp;
+exports.createApp = exportedCreateApp;
 exports.render = render;
 exports.vModelCheckbox = vModelCheckbox;
 exports.vModelDynamic = vModelDynamic;
 exports.vModelRadio = vModelRadio;
 exports.vModelSelect = vModelSelect;
 exports.vModelText = vModelText;
+exports.withKeys = withKeys;
+exports.withModifiers = withModifiers;

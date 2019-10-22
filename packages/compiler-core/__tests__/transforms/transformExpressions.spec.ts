@@ -32,6 +32,24 @@ describe('compiler: expression transform', () => {
     })
   })
 
+  test('empty interpolation', () => {
+    const node = parseWithExpressionTransform(`{{}}`) as InterpolationNode
+    const node2 = parseWithExpressionTransform(`{{ }}`) as InterpolationNode
+    const node3 = parseWithExpressionTransform(
+      `<div>{{ }}</div>`
+    ) as ElementNode
+
+    const objectToBeMatched = {
+      type: NodeTypes.SIMPLE_EXPRESSION,
+      content: ``
+    }
+    expect(node.content).toMatchObject(objectToBeMatched)
+    expect(node2.content).toMatchObject(objectToBeMatched)
+    expect((node3.children[0] as InterpolationNode).content).toMatchObject(
+      objectToBeMatched
+    )
+  })
+
   test('interpolation (children)', () => {
     const el = parseWithExpressionTransform(
       `<div>{{ foo }}</div>`
@@ -361,6 +379,8 @@ describe('compiler: expression transform', () => {
   test('should handle parse error', () => {
     const onError = jest.fn()
     parseWithExpressionTransform(`{{ a( }}`, { onError })
-    expect(onError.mock.calls[0][0].message).toMatch(`Unexpected token (1:4)`)
+    expect(onError.mock.calls[0][0].message).toMatch(
+      `Invalid JavaScript expression. (1:4)`
+    )
   })
 })

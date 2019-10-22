@@ -20,36 +20,28 @@ var VueTestRuntime = (function (exports) {
       BAIL: -1 /* BAIL */
   };
 
-  const globalsWhitelist = new Set([
-      'Infinity',
-      'undefined',
-      'NaN',
-      'isFinite',
-      'isNaN',
-      'parseFloat',
-      'parseInt',
-      'decodeURI',
-      'decodeURIComponent',
-      'encodeURI',
-      'encodeURIComponent',
-      'Math',
-      'Number',
-      'Date',
-      'Array',
-      'Object',
-      'Boolean',
-      'String',
-      'RegExp',
-      'Map',
-      'Set',
-      'JSON',
-      'Intl'
-  ]);
+  // Make a map and return a function for checking if a key
+  // is in that map.
+  //
+  // IMPORTANT: all calls of this function must be prefixed with /*#__PURE__*/
+  // So that rollup can tree-shake them if necessary.
+  function makeMap(str, expectsLowerCase) {
+      const map = Object.create(null);
+      const list = str.split(',');
+      for (let i = 0; i < list.length; i++) {
+          map[list[i]] = true;
+      }
+      return expectsLowerCase ? val => !!map[val.toLowerCase()] : val => !!map[val];
+  }
 
   const EMPTY_OBJ =  Object.freeze({})
       ;
   const EMPTY_ARR = [];
   const NOOP = () => { };
+  /**
+   * Always return false.
+   */
+  const NO = () => false;
   const isOn = (key) => key[0] === 'o' && key[1] === 'n';
   const extend = (a, b) => {
       for (const key in b) {
@@ -64,11 +56,13 @@ var VueTestRuntime = (function (exports) {
   const isString = (val) => typeof val === 'string';
   const isSymbol = (val) => typeof val === 'symbol';
   const isObject = (val) => val !== null && typeof val === 'object';
+  function isPromise(val) {
+      return isObject(val) && isFunction(val.then) && isFunction(val.catch);
+  }
   const objectToString = Object.prototype.toString;
   const toTypeString = (value) => objectToString.call(value);
   const isPlainObject = (val) => toTypeString(val) === '[object Object]';
-  const vnodeHooksRE = /^vnode/;
-  const isReservedProp = (key) => key === 'key' || key === 'ref' || key === '$once' || vnodeHooksRE.test(key);
+  const isReservedProp = (key) => key === 'key' || key === 'ref' || key === '$once' || key.startsWith(`onVnode`);
   const camelizeRE = /-(\w)/g;
   const camelize = (str) => {
       return str.replace(camelizeRE, (_, c) => (c ? c.toUpperCase() : ''));
@@ -119,12 +113,12 @@ var VueTestRuntime = (function (exports) {
   }
   function set(target, key, value, receiver) {
       value = toRaw(value);
-      const hadKey = hasOwn(target, key);
       const oldValue = target[key];
       if (isRef(oldValue) && !isRef(value)) {
           oldValue.value = value;
           return true;
       }
+      const hadKey = hasOwn(target, key);
       const result = Reflect.set(target, key, value, receiver);
       // don't trigger if target is something up in the prototype chain of original
       if (target === toRaw(receiver)) {
@@ -402,11 +396,13 @@ var VueTestRuntime = (function (exports) {
   const readonlyValues = new WeakSet();
   const nonReactiveValues = new WeakSet();
   const collectionTypes = new Set([Set, Map, WeakMap, WeakSet]);
-  const observableValueRE = /^\[object (?:Object|Array|Map|Set|WeakMap|WeakSet)\]$/;
+  const isObservableType = /*#__PURE__*/ makeMap(['Object', 'Array', 'Map', 'Set', 'WeakMap', 'WeakSet']
+      .map(t => `[object ${t}]`)
+      .join(','));
   const canObserve = (value) => {
       return (!value._isVue &&
           !value._isVNode &&
-          observableValueRE.test(toTypeString(value)) &&
+          isObservableType(toTypeString(value)) &&
           !nonReactiveValues.has(value));
   };
   function reactive(target) {
@@ -478,7 +474,7 @@ var VueTestRuntime = (function (exports) {
   }
 
   const effectSymbol = Symbol( 'effect' );
-  const activeReactiveEffectStack = [];
+  const effectStack = [];
   const ITERATE_KEY = Symbol('iterate');
   function isEffect(fn) {
       return fn != null && fn[effectSymbol] === true;
@@ -521,14 +517,14 @@ var VueTestRuntime = (function (exports) {
       if (!effect.active) {
           return fn(...args);
       }
-      if (activeReactiveEffectStack.indexOf(effect) === -1) {
+      if (!effectStack.includes(effect)) {
           cleanup(effect);
           try {
-              activeReactiveEffectStack.push(effect);
+              effectStack.push(effect);
               return fn(...args);
           }
           finally {
-              activeReactiveEffectStack.pop();
+              effectStack.pop();
           }
       }
   }
@@ -549,33 +545,31 @@ var VueTestRuntime = (function (exports) {
       shouldTrack = true;
   }
   function track(target, type, key) {
-      if (!shouldTrack) {
+      if (!shouldTrack || effectStack.length === 0) {
           return;
       }
-      const effect = activeReactiveEffectStack[activeReactiveEffectStack.length - 1];
-      if (effect) {
-          if (type === "iterate" /* ITERATE */) {
-              key = ITERATE_KEY;
-          }
-          let depsMap = targetMap.get(target);
-          if (depsMap === void 0) {
-              targetMap.set(target, (depsMap = new Map()));
-          }
-          let dep = depsMap.get(key);
-          if (dep === void 0) {
-              depsMap.set(key, (dep = new Set()));
-          }
-          if (!dep.has(effect)) {
-              dep.add(effect);
-              effect.deps.push(dep);
-              if ( effect.onTrack) {
-                  effect.onTrack({
-                      effect,
-                      target,
-                      type,
-                      key
-                  });
-              }
+      const effect = effectStack[effectStack.length - 1];
+      if (type === "iterate" /* ITERATE */) {
+          key = ITERATE_KEY;
+      }
+      let depsMap = targetMap.get(target);
+      if (depsMap === void 0) {
+          targetMap.set(target, (depsMap = new Map()));
+      }
+      let dep = depsMap.get(key);
+      if (dep === void 0) {
+          depsMap.set(key, (dep = new Set()));
+      }
+      if (!dep.has(effect)) {
+          dep.add(effect);
+          effect.deps.push(dep);
+          if ( effect.onTrack) {
+              effect.onTrack({
+                  effect,
+                  target,
+                  type,
+                  key
+              });
           }
       }
   }
@@ -641,7 +635,6 @@ var VueTestRuntime = (function (exports) {
       }
   }
 
-  const refSymbol = Symbol( 'refSymbol' );
   const convert = (val) => (isObject(val) ? reactive(val) : val);
   function ref(raw) {
       if (isRef(raw)) {
@@ -649,7 +642,7 @@ var VueTestRuntime = (function (exports) {
       }
       raw = convert(raw);
       const v = {
-          [refSymbol]: true,
+          _isRef: true,
           get value() {
               track(v, "get" /* GET */, '');
               return raw;
@@ -662,7 +655,7 @@ var VueTestRuntime = (function (exports) {
       return v;
   }
   function isRef(v) {
-      return v ? v[refSymbol] === true : false;
+      return v ? v._isRef === true : false;
   }
   function toRefs(object) {
       const ret = {};
@@ -673,7 +666,7 @@ var VueTestRuntime = (function (exports) {
   }
   function toProxyRef(object, key) {
       return {
-          [refSymbol]: true,
+          _isRef: true,
           get value() {
               return object[key];
           },
@@ -705,7 +698,7 @@ var VueTestRuntime = (function (exports) {
           }
       });
       return {
-          [refSymbol]: true,
+          _isRef: true,
           // expose effect so computed can be stopped
           effect: runner,
           get value() {
@@ -725,19 +718,20 @@ var VueTestRuntime = (function (exports) {
       };
   }
   function trackChildRun(childRunner) {
-      const parentRunner = activeReactiveEffectStack[activeReactiveEffectStack.length - 1];
-      if (parentRunner) {
-          for (let i = 0; i < childRunner.deps.length; i++) {
-              const dep = childRunner.deps[i];
-              if (!dep.has(parentRunner)) {
-                  dep.add(parentRunner);
-                  parentRunner.deps.push(dep);
-              }
+      if (effectStack.length === 0) {
+          return;
+      }
+      const parentRunner = effectStack[effectStack.length - 1];
+      for (let i = 0; i < childRunner.deps.length; i++) {
+          const dep = childRunner.deps[i];
+          if (!dep.has(parentRunner)) {
+              dep.add(parentRunner);
+              parentRunner.deps.push(dep);
           }
       }
   }
 
-  let stack = [];
+  const stack = [];
   function pushWarningContext(vnode) {
       stack.push(vnode);
   }
@@ -889,13 +883,18 @@ var VueTestRuntime = (function (exports) {
       return res;
   }
   function callWithAsyncErrorHandling(fn, instance, type, args) {
-      const res = callWithErrorHandling(fn, instance, type, args);
-      if (res != null && !res._isVue && typeof res.then === 'function') {
-          res.catch((err) => {
-              handleError(err, instance, type);
-          });
+      if (isFunction(fn)) {
+          const res = callWithErrorHandling(fn, instance, type, args);
+          if (res != null && !res._isVue && isPromise(res)) {
+              res.catch((err) => {
+                  handleError(err, instance, type);
+              });
+          }
+          return res;
       }
-      return res;
+      for (let i = 0; i < fn.length; i++) {
+          callWithAsyncErrorHandling(fn[i], instance, type, args);
+      }
   }
   function handleError(err, instance, type) {
       const contextVNode = instance ? instance.vnode : null;
@@ -927,7 +926,6 @@ var VueTestRuntime = (function (exports) {
   }
   function logError(err, type, contextVNode) {
       // default behavior is crash in prod & test, recover in dev.
-      // TODO we should probably make this configurable via `createApp`
       if (
           !(typeof process !== 'undefined' && process.env.NODE_ENV === 'test')) {
           const info = ErrorTypeStrings[type];
@@ -953,7 +951,7 @@ var VueTestRuntime = (function (exports) {
       return fn ? p.then(fn) : p;
   }
   function queueJob(job) {
-      if (queue.indexOf(job) === -1) {
+      if (!queue.includes(job)) {
           queue.push(job);
           if (!isFlushing) {
               nextTick(flushJobs);
@@ -961,17 +959,17 @@ var VueTestRuntime = (function (exports) {
       }
   }
   function queuePostFlushCb(cb) {
-      if (Array.isArray(cb)) {
-          postFlushCbs.push.apply(postFlushCbs, cb);
+      if (!isArray(cb)) {
+          postFlushCbs.push(cb);
       }
       else {
-          postFlushCbs.push(cb);
+          postFlushCbs.push(...cb);
       }
       if (!isFlushing) {
           nextTick(flushJobs);
       }
   }
-  const dedupe = (cbs) => Array.from(new Set(cbs));
+  const dedupe = (cbs) => [...new Set(cbs)];
   function flushPostFlushCbs() {
       if (postFlushCbs.length) {
           const cbs = dedupe(postFlushCbs);
@@ -1006,12 +1004,7 @@ var VueTestRuntime = (function (exports) {
                   }
               }
           }
-          try {
-              job();
-          }
-          catch (err) {
-              handleError(err, null, 10 /* SCHEDULER */);
-          }
+          callWithErrorHandling(job, null, 10 /* SCHEDULER */);
       }
       flushPostFlushCbs();
       isFlushing = false;
@@ -1033,6 +1026,7 @@ var VueTestRuntime = (function (exports) {
   // structure would be stable. This allows us to skip most children diffing
   // and only worry about the dynamic nodes (indicated by patch flags).
   const blockStack = [];
+  let currentBlock = null;
   // Open a block.
   // This must be called before `createBlock`. It cannot be part of `createBlock`
   // because the children of the block are evaluated before `createBlock` itself
@@ -1045,22 +1039,27 @@ var VueTestRuntime = (function (exports) {
   // disableTracking is true when creating a fragment block, since a fragment
   // always diffs its children.
   function openBlock(disableTracking) {
-      blockStack.push(disableTracking ? null : []);
+      blockStack.push((currentBlock = disableTracking ? null : []));
   }
   let shouldTrack$1 = true;
   // Create a block root vnode. Takes the same exact arguments as `createVNode`.
   // A block root keeps track of dynamic nodes within the block in the
   // `dynamicChildren` array.
   function createBlock(type, props, children, patchFlag, dynamicProps) {
-      // avoid a block with optFlag tracking itself
+      // avoid a block with patchFlag tracking itself
       shouldTrack$1 = false;
       const vnode = createVNode(type, props, children, patchFlag, dynamicProps);
       shouldTrack$1 = true;
-      const trackedNodes = blockStack.pop();
-      vnode.dynamicChildren =
-          trackedNodes && trackedNodes.length ? trackedNodes : EMPTY_ARR;
-      // a block is always going to be patched
-      trackDynamicNode(vnode);
+      // save current block children on the block vnode
+      vnode.dynamicChildren = currentBlock || EMPTY_ARR;
+      // close block
+      blockStack.pop();
+      currentBlock = blockStack[blockStack.length - 1] || null;
+      // a block is always going to be patched, so track it as a child of its
+      // parent block
+      if (currentBlock !== null) {
+          currentBlock.push(vnode);
+      }
       return vnode;
   }
   function isVNode(value) {
@@ -1073,10 +1072,10 @@ var VueTestRuntime = (function (exports) {
           if (isReactive(props) || SetupProxySymbol in props) {
               props = extend({}, props);
           }
-          if (props.class != null) {
-              props.class = normalizeClass(props.class);
+          let { class: klass, style } = props;
+          if (klass != null && !isString(klass)) {
+              props.class = normalizeClass(klass);
           }
-          let { style } = props;
           if (style != null) {
               // reactive state objects need to be cloned since they are likely to be
               // mutated
@@ -1098,8 +1097,8 @@ var VueTestRuntime = (function (exports) {
           _isVNode: true,
           type,
           props,
-          key: (props && props.key) || null,
-          ref: (props && props.ref) || null,
+          key: (props !== null && props.key) || null,
+          ref: (props !== null && props.ref) || null,
           children: null,
           component: null,
           suspense: null,
@@ -1118,18 +1117,13 @@ var VueTestRuntime = (function (exports) {
       // component doesn't need to update, it needs to persist the instance on to
       // the next vnode so that it can be properly unmounted later.
       if (shouldTrack$1 &&
-          (patchFlag ||
+          currentBlock !== null &&
+          (patchFlag > 0 ||
               shapeFlag & 4 /* STATEFUL_COMPONENT */ ||
               shapeFlag & 2 /* FUNCTIONAL_COMPONENT */)) {
-          trackDynamicNode(vnode);
+          currentBlock.push(vnode);
       }
       return vnode;
-  }
-  function trackDynamicNode(vnode) {
-      const currentBlockDynamicNodes = blockStack[blockStack.length - 1];
-      if (currentBlockDynamicNodes != null) {
-          currentBlockDynamicNodes.push(vnode);
-      }
   }
   function cloneVNode(vnode) {
       return {
@@ -1288,33 +1282,16 @@ var VueTestRuntime = (function (exports) {
                   ));
       }
   }
-  function onBeforeMount(hook, target = currentInstance) {
-      injectHook("bm" /* BEFORE_MOUNT */, hook, target);
-  }
-  function onMounted(hook, target = currentInstance) {
-      injectHook("m" /* MOUNTED */, hook, target);
-  }
-  function onBeforeUpdate(hook, target = currentInstance) {
-      injectHook("bu" /* BEFORE_UPDATE */, hook, target);
-  }
-  function onUpdated(hook, target = currentInstance) {
-      injectHook("u" /* UPDATED */, hook, target);
-  }
-  function onBeforeUnmount(hook, target = currentInstance) {
-      injectHook("bum" /* BEFORE_UNMOUNT */, hook, target);
-  }
-  function onUnmounted(hook, target = currentInstance) {
-      injectHook("um" /* UNMOUNTED */, hook, target);
-  }
-  function onRenderTriggered(hook, target = currentInstance) {
-      injectHook("rtg" /* RENDER_TRIGGERED */, hook, target);
-  }
-  function onRenderTracked(hook, target = currentInstance) {
-      injectHook("rtc" /* RENDER_TRACKED */, hook, target);
-  }
-  function onErrorCaptured(hook, target = currentInstance) {
-      injectHook("ec" /* ERROR_CAPTURED */, hook, target);
-  }
+  const createHook = (lifecycle) => (hook, target = currentInstance) => injectHook(lifecycle, hook, target);
+  const onBeforeMount = createHook("bm" /* BEFORE_MOUNT */);
+  const onMounted = createHook("m" /* MOUNTED */);
+  const onBeforeUpdate = createHook("bu" /* BEFORE_UPDATE */);
+  const onUpdated = createHook("u" /* UPDATED */);
+  const onBeforeUnmount = createHook("bum" /* BEFORE_UNMOUNT */);
+  const onUnmounted = createHook("um" /* UNMOUNTED */);
+  const onRenderTriggered = createHook("rtg" /* RENDER_TRIGGERED */);
+  const onRenderTracked = createHook("rtc" /* RENDER_TRACKED */);
+  const onErrorCaptured = createHook("ec" /* ERROR_CAPTURED */);
 
   // mark the current rendering instance for asset resolution (e.g.
   // resolveComponent, resolveDirective) during render
@@ -1382,7 +1359,7 @@ var VueTestRuntime = (function (exports) {
               return nextProps !== null;
           }
           if (nextProps === null) {
-              return prevProps !== null;
+              return true;
           }
           return hasPropsChanged(prevProps, nextProps);
       }
@@ -1728,21 +1705,33 @@ var VueTestRuntime = (function (exports) {
   const foo = resolveDirective('foo')
   const bar = resolveDirective('bar')
 
-  return applyDirectives(h(comp), [
+  return withDirectives(h(comp), [
     [foo, this.x],
     [bar, this.y]
   ])
   */
   const valueCache = new WeakMap();
+  const isBuiltInDirective = /*#__PURE__*/ makeMap('bind,cloak,else-if,else,for,html,if,model,on,once,pre,show,slot,text');
+  function validateDirectiveName(name) {
+      if (isBuiltInDirective(name)) {
+          warn('Do not use built-in directive ids as custom directive id: ' + name);
+      }
+  }
   function applyDirective(props, instance, directive, value, arg, modifiers = EMPTY_OBJ) {
       let valueCacheForDir = valueCache.get(directive);
       if (!valueCacheForDir) {
           valueCacheForDir = new WeakMap();
           valueCache.set(directive, valueCacheForDir);
       }
+      if (isFunction(directive)) {
+          directive = {
+              mounted: directive,
+              updated: directive
+          };
+      }
       for (const key in directive) {
           const hook = directive[key];
-          const hookKey = `vnode` + key[0].toUpperCase() + key.slice(1);
+          const hookKey = `onVnode` + key[0].toUpperCase() + key.slice(1);
           const vnodeHook = (vnode, prevVNode) => {
               let oldValue;
               if (prevVNode != null) {
@@ -1764,31 +1753,25 @@ var VueTestRuntime = (function (exports) {
               : vnodeHook;
       }
   }
-  function applyDirectives(vnode, directives) {
+  function withDirectives(vnode, directives) {
       const instance = currentRenderingInstance;
       if (instance !== null) {
-          vnode = cloneVNode(vnode);
-          vnode.props = vnode.props != null ? extend({}, vnode.props) : {};
+          vnode.props = vnode.props || {};
           for (let i = 0; i < directives.length; i++) {
               const [dir, value, arg, modifiers] = directives[i];
               applyDirective(vnode.props, instance, dir, value, arg, modifiers);
           }
       }
       else {
-          warn(`applyDirectives can only be used inside render functions.`);
+          warn(`withDirectives can only be used inside render functions.`);
       }
       return vnode;
   }
   function invokeDirectiveHook(hook, instance, vnode, prevVNode = null) {
-      const args = [vnode, prevVNode];
-      if (isArray(hook)) {
-          for (let i = 0; i < hook.length; i++) {
-              callWithAsyncErrorHandling(hook[i], instance, 7 /* DIRECTIVE_HOOK */, args);
-          }
-      }
-      else if (isFunction(hook)) {
-          callWithAsyncErrorHandling(hook, instance, 7 /* DIRECTIVE_HOOK */, args);
-      }
+      callWithAsyncErrorHandling(hook, instance, 7 /* DIRECTIVE_HOOK */, [
+          vnode,
+          prevVNode
+      ]);
   }
 
   function createAppContext() {
@@ -1796,6 +1779,8 @@ var VueTestRuntime = (function (exports) {
           config: {
               devtools: true,
               performance: false,
+              isNativeTag: NO,
+              isCustomElement: NO,
               errorHandler: undefined,
               warnHandler: undefined
           },
@@ -1836,6 +1821,9 @@ var VueTestRuntime = (function (exports) {
                   return app;
               },
               component(name, component) {
+                  {
+                      validateComponentName(name, context.config);
+                  }
                   if (!component) {
                       return context.components[name];
                   }
@@ -1845,7 +1833,9 @@ var VueTestRuntime = (function (exports) {
                   }
               },
               directive(name, directive) {
-                  // TODO directive name validation
+                  {
+                      validateDirectiveName(name);
+                  }
                   if (!directive) {
                       return context.directives[name];
                   }
@@ -1972,7 +1962,6 @@ var VueTestRuntime = (function (exports) {
                   n1 = null;
               }
               else if (n1.props && n1.props.$once) {
-                  console.log(111);
                   return;
               }
           }
@@ -2029,7 +2018,7 @@ var VueTestRuntime = (function (exports) {
       }
       function processElement(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized) {
           if (n1 == null) {
-              mountElement(n2, container, anchor, parentComponent, parentSuspense, isSVG);
+              mountElement(n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized);
           }
           else {
               patchElement(n1, n2, parentComponent, parentSuspense, isSVG, optimized);
@@ -2038,7 +2027,7 @@ var VueTestRuntime = (function (exports) {
               setRef(n2.ref, n1 && n1.ref, parentComponent, n2.el);
           }
       }
-      function mountElement(vnode, container, anchor, parentComponent, parentSuspense, isSVG) {
+      function mountElement(vnode, container, anchor, parentComponent, parentSuspense, isSVG, optimized) {
           const tag = vnode.type;
           isSVG = isSVG || tag === 'svg';
           const el = (vnode.el = hostCreateElement(tag, isSVG));
@@ -2049,27 +2038,29 @@ var VueTestRuntime = (function (exports) {
                       continue;
                   hostPatchProp(el, key, props[key], null, isSVG);
               }
-              if (props.vnodeBeforeMount != null) {
-                  invokeDirectiveHook(props.vnodeBeforeMount, parentComponent, vnode);
+              if (props.onVnodeBeforeMount != null) {
+                  invokeDirectiveHook(props.onVnodeBeforeMount, parentComponent, vnode);
               }
           }
           if (shapeFlag & 8 /* TEXT_CHILDREN */) {
               hostSetElementText(el, vnode.children);
           }
           else if (shapeFlag & 16 /* ARRAY_CHILDREN */) {
-              mountChildren(vnode.children, el, null, parentComponent, parentSuspense, isSVG);
+              mountChildren(vnode.children, el, null, parentComponent, parentSuspense, isSVG, optimized || vnode.dynamicChildren !== null);
           }
           hostInsert(el, container, anchor);
-          if (props != null && props.vnodeMounted != null) {
+          if (props != null && props.onVnodeMounted != null) {
               queuePostRenderEffect(() => {
-                  invokeDirectiveHook(props.vnodeMounted, parentComponent, vnode);
+                  invokeDirectiveHook(props.onVnodeMounted, parentComponent, vnode);
               }, parentSuspense);
           }
       }
-      function mountChildren(children, container, anchor, parentComponent, parentSuspense, isSVG, start = 0) {
+      function mountChildren(children, container, anchor, parentComponent, parentSuspense, isSVG, optimized, start = 0) {
           for (let i = start; i < children.length; i++) {
-              const child = (children[i] = normalizeVNode(children[i]));
-              patch(null, child, container, anchor, parentComponent, parentSuspense, isSVG);
+              const child = optimized
+                  ? children[i]
+                  : (children[i] = normalizeVNode(children[i]));
+              patch(null, child, container, anchor, parentComponent, parentSuspense, isSVG, optimized);
           }
       }
       function patchElement(n1, n2, parentComponent, parentSuspense, isSVG, optimized) {
@@ -2077,8 +2068,8 @@ var VueTestRuntime = (function (exports) {
           const { patchFlag, dynamicChildren } = n2;
           const oldProps = (n1 && n1.props) || EMPTY_OBJ;
           const newProps = n2.props || EMPTY_OBJ;
-          if (newProps.vnodeBeforeUpdate != null) {
-              invokeDirectiveHook(newProps.vnodeBeforeUpdate, parentComponent, n2, n1);
+          if (newProps.onVnodeBeforeUpdate != null) {
+              invokeDirectiveHook(newProps.onVnodeBeforeUpdate, parentComponent, n2, n1);
           }
           if (patchFlag > 0) {
               // the presence of a patchFlag means this element's render code was
@@ -2131,31 +2122,35 @@ var VueTestRuntime = (function (exports) {
                   return; // terminal
               }
           }
-          else if (!optimized) {
+          else if (!optimized && dynamicChildren == null) {
               // unoptimized, full diff
               patchProps(el, n2, oldProps, newProps, parentComponent, parentSuspense, isSVG);
           }
           if (dynamicChildren != null) {
-              // children fast path
-              const oldDynamicChildren = n1.dynamicChildren;
-              for (let i = 0; i < dynamicChildren.length; i++) {
-                  const oldVNode = oldDynamicChildren[i];
-                  patch(oldVNode, dynamicChildren[i], 
-                  // in the case of a Fragment, we need to provide the actual parent
-                  // of the Fragment itself so it can move its children. In other cases,
-                  // the parent container is not actually used so we just pass the
-                  // block element here to avoid a DOM parentNode call.
-                  oldVNode.type === Fragment ? hostParentNode(oldVNode.el) : el, null, parentComponent, parentSuspense, isSVG, true);
-              }
+              patchBlockChildren(n1.dynamicChildren, dynamicChildren, el, parentComponent, parentSuspense, isSVG);
           }
           else if (!optimized) {
               // full diff
               patchChildren(n1, n2, el, null, parentComponent, parentSuspense, isSVG);
           }
-          if (newProps.vnodeUpdated != null) {
+          if (newProps.onVnodeUpdated != null) {
               queuePostRenderEffect(() => {
-                  invokeDirectiveHook(newProps.vnodeUpdated, parentComponent, n2, n1);
+                  invokeDirectiveHook(newProps.onVnodeUpdated, parentComponent, n2, n1);
               }, parentSuspense);
+          }
+      }
+      // The fast path for blocks.
+      function patchBlockChildren(oldChildren, newChildren, fallbackContainer, parentComponent, parentSuspense, isSVG) {
+          for (let i = 0; i < newChildren.length; i++) {
+              const oldVNode = oldChildren[i];
+              patch(oldVNode, newChildren[i], 
+              // in the case of a Fragment, we need to provide the actual parent
+              // of the Fragment itself so it can move its children. In other cases,
+              // the parent container is not actually used so we just pass the
+              // block element here to avoid a DOM parentNode call.
+              oldVNode.type === Fragment
+                  ? hostParentNode(oldVNode.el)
+                  : fallbackContainer, null, parentComponent, parentSuspense, isSVG, true);
           }
       }
       function patchProps(el, vnode, oldProps, newProps, parentComponent, parentSuspense, isSVG) {
@@ -2191,7 +2186,7 @@ var VueTestRuntime = (function (exports) {
               // a fragment can only have array children
               // since they are either generated by the compiler, or implicitly created
               // from arrays.
-              mountChildren(n2.children, container, fragmentEndAnchor, parentComponent, parentSuspense, isSVG);
+              mountChildren(n2.children, container, fragmentEndAnchor, parentComponent, parentSuspense, isSVG, optimized);
           }
           else {
               patchChildren(n1, n2, container, fragmentEndAnchor, parentComponent, parentSuspense, isSVG, optimized);
@@ -2209,7 +2204,7 @@ var VueTestRuntime = (function (exports) {
                       hostSetElementText(target, children);
                   }
                   else if (shapeFlag & 16 /* ARRAY_CHILDREN */) {
-                      mountChildren(children, target, null, parentComponent, parentSuspense, isSVG);
+                      mountChildren(children, target, null, parentComponent, parentSuspense, isSVG, optimized);
                   }
               }
               else {
@@ -2221,6 +2216,10 @@ var VueTestRuntime = (function (exports) {
               const target = (n2.target = n1.target);
               if (patchFlag === 1 /* TEXT */) {
                   hostSetElementText(target, children);
+              }
+              else if (n2.dynamicChildren) {
+                  // fast path when the portal happens to be a block root
+                  patchBlockChildren(n1.dynamicChildren, n2.dynamicChildren, container, parentComponent, parentSuspense, isSVG);
               }
               else if (!optimized) {
                   patchChildren(n1, n2, target, null, parentComponent, parentSuspense, isSVG);
@@ -2611,7 +2610,7 @@ var VueTestRuntime = (function (exports) {
                   }
                   // mount new if array
                   if (shapeFlag & 16 /* ARRAY_CHILDREN */) {
-                      mountChildren(c2, container, anchor, parentComponent, parentSuspense, isSVG);
+                      mountChildren(c2, container, anchor, parentComponent, parentSuspense, isSVG, optimized);
                   }
               }
           }
@@ -2624,7 +2623,9 @@ var VueTestRuntime = (function (exports) {
           const commonLength = Math.min(oldLength, newLength);
           let i;
           for (i = 0; i < commonLength; i++) {
-              const nextChild = (c2[i] = normalizeVNode(c2[i]));
+              const nextChild = optimized
+                  ? c2[i]
+                  : (c2[i] = normalizeVNode(c2[i]));
               patch(c1[i], nextChild, container, null, parentComponent, parentSuspense, isSVG, optimized);
           }
           if (oldLength > newLength) {
@@ -2633,7 +2634,7 @@ var VueTestRuntime = (function (exports) {
           }
           else {
               // mount new
-              mountChildren(c2, container, anchor, parentComponent, parentSuspense, isSVG, commonLength);
+              mountChildren(c2, container, anchor, parentComponent, parentSuspense, isSVG, optimized, commonLength);
           }
       }
       // can be all-keyed or mixed
@@ -2647,7 +2648,9 @@ var VueTestRuntime = (function (exports) {
           // (a b) d e
           while (i <= e1 && i <= e2) {
               const n1 = c1[i];
-              const n2 = (c2[i] = normalizeVNode(c2[i]));
+              const n2 = optimized
+                  ? c2[i]
+                  : (c2[i] = normalizeVNode(c2[i]));
               if (isSameType$1(n1, n2)) {
                   patch(n1, n2, container, parentAnchor, parentComponent, parentSuspense, isSVG, optimized);
               }
@@ -2661,7 +2664,9 @@ var VueTestRuntime = (function (exports) {
           // d e (b c)
           while (i <= e1 && i <= e2) {
               const n1 = c1[e1];
-              const n2 = (c2[e2] = normalizeVNode(c2[e2]));
+              const n2 = optimized
+                  ? c2[i]
+                  : (c2[e2] = normalizeVNode(c2[e2]));
               if (isSameType$1(n1, n2)) {
                   patch(n1, n2, container, parentAnchor, parentComponent, parentSuspense, isSVG, optimized);
               }
@@ -2683,7 +2688,7 @@ var VueTestRuntime = (function (exports) {
                   const nextPos = e2 + 1;
                   const anchor = nextPos < l2 ? c2[nextPos].el : parentAnchor;
                   while (i <= e2) {
-                      patch(null, (c2[i] = normalizeVNode(c2[i])), container, anchor, parentComponent, parentSuspense, isSVG);
+                      patch(null, optimized ? c2[i] : (c2[i] = normalizeVNode(c2[i])), container, anchor, parentComponent, parentSuspense, isSVG);
                       i++;
                   }
               }
@@ -2711,7 +2716,9 @@ var VueTestRuntime = (function (exports) {
               // 5.1 build key:index map for newChildren
               const keyToNewIndexMap = new Map();
               for (i = s2; i <= e2; i++) {
-                  const nextChild = (c2[i] = normalizeVNode(c2[i]));
+                  const nextChild = optimized
+                      ? c2[i]
+                      : (c2[i] = normalizeVNode(c2[i]));
                   if (nextChild.key != null) {
                       if ( keyToNewIndexMap.has(nextChild.key)) {
                           warn(`Duplicate keys found during update:`, JSON.stringify(nextChild.key), `Make sure keys are unique.`);
@@ -2732,9 +2739,9 @@ var VueTestRuntime = (function (exports) {
               // and oldIndex = 0 is a special value indicating the new node has
               // no corresponding old node.
               // used for determining longest stable subsequence
-              const newIndexToOldIndexMap = [];
+              const newIndexToOldIndexMap = new Array(toBePatched);
               for (i = 0; i < toBePatched; i++)
-                  newIndexToOldIndexMap.push(0);
+                  newIndexToOldIndexMap[i] = 0;
               for (i = s1; i <= e1; i++) {
                   const prevChild = c1[i];
                   if (patched >= toBePatched) {
@@ -2839,8 +2846,8 @@ var VueTestRuntime = (function (exports) {
               unmountSuspense(suspense, parentComponent, parentSuspense, doRemove);
               return;
           }
-          if (props != null && props.vnodeBeforeUnmount != null) {
-              invokeDirectiveHook(props.vnodeBeforeUnmount, parentComponent, vnode);
+          if (props != null && props.onVnodeBeforeUnmount != null) {
+              invokeDirectiveHook(props.onVnodeBeforeUnmount, parentComponent, vnode);
           }
           const shouldRemoveChildren = type === Fragment && doRemove;
           if (dynamicChildren != null) {
@@ -2854,9 +2861,9 @@ var VueTestRuntime = (function (exports) {
               if (anchor != null)
                   hostRemove(anchor);
           }
-          if (props != null && props.vnodeUnmounted != null) {
+          if (props != null && props.onVnodeUnmounted != null) {
               queuePostRenderEffect(() => {
-                  invokeDirectiveHook(props.vnodeUnmounted, parentComponent, vnode);
+                  invokeDirectiveHook(props.onVnodeUnmounted, parentComponent, vnode);
               }, parentSuspense);
           }
       }
@@ -3178,62 +3185,73 @@ var VueTestRuntime = (function (exports) {
       return value;
   }
 
+  const publicPropertiesMap = {
+      $data: 'data',
+      $props: 'propsProxy',
+      $attrs: 'attrs',
+      $slots: 'slots',
+      $refs: 'refs',
+      $parent: 'parent',
+      $root: 'root',
+      $emit: 'emit',
+      $options: 'type'
+  };
   const PublicInstanceProxyHandlers = {
       get(target, key) {
-          const { renderContext, data, props, propsProxy } = target;
-          if (data !== EMPTY_OBJ && hasOwn(data, key)) {
+          const { renderContext, data, props, propsProxy, accessCache, type } = target;
+          // This getter gets called for every property access on the render context
+          // during render and is a major hotspot. The most expensive part of this
+          // is the multiple hasOwn() calls. It's much faster to do a simple property
+          // access on a plain object, so we use an accessCache object (with null
+          // prototype) to memoize what access type a key corresponds to.
+          const n = accessCache[key];
+          if (n !== undefined) {
+              switch (n) {
+                  case 0 /* DATA */:
+                      return data[key];
+                  case 1 /* CONTEXT */:
+                      return renderContext[key];
+                  case 2 /* PROPS */:
+                      return propsProxy[key];
+              }
+          }
+          else if (data !== EMPTY_OBJ && hasOwn(data, key)) {
+              accessCache[key] = 0 /* DATA */;
               return data[key];
           }
           else if (hasOwn(renderContext, key)) {
+              accessCache[key] = 1 /* CONTEXT */;
               return renderContext[key];
           }
           else if (hasOwn(props, key)) {
+              // only cache props access if component has declared (thus stable) props
+              if (type.props != null) {
+                  accessCache[key] = 2 /* PROPS */;
+              }
               // return the value from propsProxy for ref unwrapping and readonly
               return propsProxy[key];
           }
-          else {
-              // TODO simplify this?
+          else if (key === '$cache') {
+              return target.renderCache || (target.renderCache = []);
+          }
+          else if (key === '$el') {
+              return target.vnode.el;
+          }
+          else if (hasOwn(publicPropertiesMap, key)) {
+              return target[publicPropertiesMap[key]];
+          }
+          // methods are only exposed when options are supported
+          {
               switch (key) {
-                  case '$data':
-                      return data;
-                  case '$props':
-                      return propsProxy;
-                  case '$attrs':
-                      return target.attrs;
-                  case '$slots':
-                      return target.slots;
-                  case '$refs':
-                      return target.refs;
-                  case '$parent':
-                      return target.parent;
-                  case '$root':
-                      return target.root;
-                  case '$emit':
-                      return target.emit;
-                  case '$el':
-                      return target.vnode.el;
-                  case '$options':
-                      return target.type;
-                  default:
-                      // methods are only exposed when options are supported
-                      {
-                          switch (key) {
-                              case '$forceUpdate':
-                                  return target.update;
-                              case '$nextTick':
-                                  return nextTick;
-                              case '$watch':
-                                  return instanceWatch.bind(target);
-                          }
-                      }
-                      return target.user[key];
+                  case '$forceUpdate':
+                      return target.update;
+                  case '$nextTick':
+                      return nextTick;
+                  case '$watch':
+                      return instanceWatch.bind(target);
               }
           }
-      },
-      // this trap is only called in browser-compiled render functions that use
-      // `with (this) {}`
-      has(_, key) {
-          return key[0] !== '_' && !globalsWhitelist.has(key);
+          return target.user[key];
       },
       set(target, key, value) {
           const { data, renderContext } = target;
@@ -3350,12 +3368,26 @@ var VueTestRuntime = (function (exports) {
       if (computedOptions) {
           for (const key in computedOptions) {
               const opt = computedOptions[key];
-              renderContext[key] = isFunction(opt)
-                  ? computed$1(opt.bind(ctx))
-                  : computed$1({
-                      get: opt.get.bind(ctx),
-                      set: opt.set.bind(ctx)
-                  });
+              if (isFunction(opt)) {
+                  renderContext[key] = computed$1(opt.bind(ctx));
+              }
+              else {
+                  const { get, set } = opt;
+                  if (isFunction(get)) {
+                      renderContext[key] = computed$1({
+                          get: get.bind(ctx),
+                          set: isFunction(set)
+                              ? set.bind(ctx)
+                              :  () => {
+                                      warn(`Computed property "${key}" was assigned to but it has no setter.`);
+                                  }
+                                  
+                      });
+                  }
+                  else {
+                      warn(`Computed property "${key}" has no getter.`);
+                  }
+              }
           }
       }
       if (methods) {
@@ -3483,6 +3515,72 @@ var VueTestRuntime = (function (exports) {
       }
   }
 
+  const FRAGMENT = Symbol( `Fragment` );
+  const PORTAL = Symbol( `Portal` );
+  const COMMENT = Symbol( `Comment` );
+  const TEXT = Symbol( `Text` );
+  const SUSPENSE = Symbol( `Suspense` );
+  const OPEN_BLOCK = Symbol( `openBlock` );
+  const CREATE_BLOCK = Symbol( `createBlock` );
+  const CREATE_VNODE = Symbol( `createVNode` );
+  const RESOLVE_COMPONENT = Symbol( `resolveComponent` );
+  const RESOLVE_DYNAMIC_COMPONENT = Symbol( `resolveDynamicComponent` );
+  const RESOLVE_DIRECTIVE = Symbol( `resolveDirective` );
+  const WITH_DIRECTIVES = Symbol( `withDirectives` );
+  const RENDER_LIST = Symbol( `renderList` );
+  const RENDER_SLOT = Symbol( `renderSlot` );
+  const CREATE_SLOTS = Symbol( `createSlots` );
+  const TO_STRING = Symbol( `toString` );
+  const MERGE_PROPS = Symbol( `mergeProps` );
+  const TO_HANDLERS = Symbol( `toHandlers` );
+  const CAMELIZE = Symbol( `camelize` );
+  // Name mapping for runtime helpers that need to be imported from 'vue' in
+  // generated code. Make sure these are correctly exported in the runtime!
+  // Using `any` here because TS doesn't allow symbols as index type.
+  const helperNameMap = {
+      [FRAGMENT]: `Fragment`,
+      [PORTAL]: `Portal`,
+      [COMMENT]: `Comment`,
+      [TEXT]: `Text`,
+      [SUSPENSE]: `Suspense`,
+      [OPEN_BLOCK]: `openBlock`,
+      [CREATE_BLOCK]: `createBlock`,
+      [CREATE_VNODE]: `createVNode`,
+      [RESOLVE_COMPONENT]: `resolveComponent`,
+      [RESOLVE_DYNAMIC_COMPONENT]: `resolveDynamicComponent`,
+      [RESOLVE_DIRECTIVE]: `resolveDirective`,
+      [WITH_DIRECTIVES]: `withDirectives`,
+      [RENDER_LIST]: `renderList`,
+      [RENDER_SLOT]: `renderSlot`,
+      [CREATE_SLOTS]: `createSlots`,
+      [TO_STRING]: `toString`,
+      [MERGE_PROPS]: `mergeProps`,
+      [TO_HANDLERS]: `toHandlers`,
+      [CAMELIZE]: `camelize`
+  };
+  function registerRuntimeHelpers(helpers) {
+      Object.getOwnPropertySymbols(helpers).forEach(s => {
+          helperNameMap[s] = helpers[s];
+      });
+  }
+
+  const V_MODEL_RADIO = Symbol( `vModelRadio` );
+  const V_MODEL_CHECKBOX = Symbol( `vModelCheckbox` );
+  const V_MODEL_TEXT = Symbol( `vModelText` );
+  const V_MODEL_SELECT = Symbol( `vModelSelect` );
+  const V_MODEL_DYNAMIC = Symbol( `vModelDynamic` );
+  const V_ON_WITH_MODIFIERS = Symbol( `vOnModifiersGuard` );
+  const V_ON_WITH_KEYS = Symbol( `vOnKeysGuard` );
+  registerRuntimeHelpers({
+      [V_MODEL_RADIO]: `vModelRadio`,
+      [V_MODEL_CHECKBOX]: `vModelCheckbox`,
+      [V_MODEL_TEXT]: `vModelText`,
+      [V_MODEL_SELECT]: `vModelSelect`,
+      [V_MODEL_DYNAMIC]: `vModelDynamic`,
+      [V_ON_WITH_MODIFIERS]: `withModifiers`,
+      [V_ON_WITH_KEYS]: `withKeys`
+  });
+
   const emptyAppContext = createAppContext();
   function createComponentInstance(vnode, parent) {
       // inherit parent app context - or - if root, adopt from root vnode
@@ -3502,6 +3600,8 @@ var VueTestRuntime = (function (exports) {
           setupContext: null,
           effects: null,
           provides: parent ? parent.provides : Object.create(appContext.provides),
+          accessCache: null,
+          renderCache: null,
           // setup context properties
           renderContext: EMPTY_OBJ,
           data: EMPTY_OBJ,
@@ -3538,14 +3638,7 @@ var VueTestRuntime = (function (exports) {
               const props = instance.vnode.props || EMPTY_OBJ;
               const handler = props[`on${event}`] || props[`on${capitalize(event)}`];
               if (handler) {
-                  if (isArray(handler)) {
-                      for (let i = 0; i < handler.length; i++) {
-                          callWithAsyncErrorHandling(handler[i], instance, 6 /* COMPONENT_EVENT_HANDLER */, args);
-                      }
-                  }
-                  else {
-                      callWithAsyncErrorHandling(handler, instance, 6 /* COMPONENT_EVENT_HANDLER */, args);
-                  }
+                  callWithAsyncErrorHandling(handler, instance, 6 /* COMPONENT_EVENT_HANDLER */, args);
               }
           }
       };
@@ -3558,8 +3651,35 @@ var VueTestRuntime = (function (exports) {
   const setCurrentInstance = (instance) => {
       currentInstance = instance;
   };
+  const isBuiltInTag = /*#__PURE__*/ makeMap('slot,component');
+  function validateComponentName(name, config) {
+      const appIsNativeTag = config.isNativeTag || NO;
+      if (isBuiltInTag(name) || appIsNativeTag(name)) {
+          warn('Do not use built-in or reserved HTML elements as component id: ' + name);
+      }
+  }
   function setupStatefulComponent(instance, parentSuspense) {
       const Component = instance.type;
+      {
+          if (Component.name) {
+              validateComponentName(Component.name, instance.appContext.config);
+          }
+          if (Component.components) {
+              const names = Object.keys(Component.components);
+              for (let i = 0; i < names.length; i++) {
+                  const name = names[i];
+                  validateComponentName(name, instance.appContext.config);
+              }
+          }
+          if (Component.directives) {
+              const names = Object.keys(Component.directives);
+              for (let i = 0; i < names.length; i++) {
+                  validateDirectiveName(names[i]);
+              }
+          }
+      }
+      // 0. create render proxy property access cache
+      instance.accessCache = {};
       // 1. create render proxy
       instance.renderProxy = new Proxy(instance, PublicInstanceProxyHandlers);
       // 2. create props proxy
@@ -3576,9 +3696,7 @@ var VueTestRuntime = (function (exports) {
           const setupResult = callWithErrorHandling(setup, instance, 0 /* SETUP_FUNCTION */, [propsProxy, setupContext]);
           currentInstance = null;
           currentSuspense = null;
-          if (setupResult &&
-              isFunction(setupResult.then) &&
-              isFunction(setupResult.catch)) {
+          if (isPromise(setupResult)) {
               {
                   // async setup returned Promise.
                   // bail here and wait for re-entry.
@@ -3613,33 +3731,21 @@ var VueTestRuntime = (function (exports) {
       }
       finishComponentSetup(instance, parentSuspense);
   }
-  let compile;
   function registerRuntimeCompiler(_compile) {
-      compile = _compile;
   }
   function finishComponentSetup(instance, parentSuspense) {
       const Component = instance.type;
       if (!instance.render) {
-          if (Component.template && !Component.render) {
-              if (compile) {
-                  Component.render = compile(Component.template, {
-                      onError(err) {
-                          {
-                              // TODO use err.loc to provide codeframe like Vue 2
-                              warn(`Template compilation error: ${err.message}`);
-                          }
-                      }
-                  });
-              }
-              else {
+          if ( !Component.render) {
+              /* istanbul ignore if */
+              if ( Component.template) {
                   warn(`Component provides template but the build of Vue you are running ` +
                       `does not support on-the-fly template compilation. Either use the ` +
                       `full build or pre-compile the template using Vue CLI.`);
               }
-          }
-          if ( !Component.render) {
-              warn(`Component is missing render function. Either provide a template or ` +
-                  `return a render function from setup().`);
+              else {
+                  warn(`Component is missing${ ``} render function.`);
+              }
           }
           instance.render = (Component.render || NOOP);
       }
@@ -3658,7 +3764,7 @@ var VueTestRuntime = (function (exports) {
   // used to identify a setup context proxy
   const SetupProxySymbol = Symbol();
   const SetupProxyHandlers = {};
-  ['attrs', 'slots', 'refs'].forEach((type) => {
+  ['attrs', 'slots'].forEach((type) => {
       SetupProxyHandlers[type] = {
           get: (instance, key) => instance[type][key],
           has: (instance, key) => key === SetupProxySymbol || key in instance[type],
@@ -3671,12 +3777,11 @@ var VueTestRuntime = (function (exports) {
   });
   function createSetupContext(instance) {
       const context = {
-          // attrs, slots & refs are non-reactive, but they need to always expose
+          // attrs & slots are non-reactive, but they need to always expose
           // the latest values (instance.xxx may get replaced during updates) so we
           // need to expose them through a proxy
           attrs: new Proxy(instance, SetupProxyHandlers.attrs),
           slots: new Proxy(instance, SetupProxyHandlers.slots),
-          refs: new Proxy(instance, SetupProxyHandlers.refs),
           emit: instance.emit
       };
       return  Object.freeze(context) ;
@@ -3733,6 +3838,16 @@ var VueTestRuntime = (function (exports) {
   function resolveComponent(name) {
       return resolveAsset('components', name);
   }
+  function resolveDynamicComponent(component) {
+      if (!component)
+          return;
+      if (isString(component)) {
+          return resolveAsset('components', component);
+      }
+      else if (isFunction(component) || isObject(component)) {
+          return component;
+      }
+  }
   function resolveDirective(name) {
       return resolveAsset('directives', name);
   }
@@ -3756,26 +3871,22 @@ var VueTestRuntime = (function (exports) {
   }
 
   function renderList(source, renderItem) {
-      let ret = [];
+      let ret;
       if (isArray(source) || isString(source)) {
+          ret = new Array(source.length);
           for (let i = 0, l = source.length; i < l; i++) {
-              ret.push(renderItem(source[i], i));
+              ret[i] = renderItem(source[i], i);
           }
       }
       else if (typeof source === 'number') {
+          ret = new Array(source);
           for (let i = 0; i < source; i++) {
-              ret.push(renderItem(i + 1, i));
+              ret[i] = renderItem(i + 1, i);
           }
       }
       else if (isObject(source)) {
           if (source[Symbol.iterator]) {
-              ret = [];
-              const iterator = source[Symbol.iterator]();
-              let result = iterator.next();
-              while (!result.done) {
-                  ret.push(renderItem(result.value, ret.length));
-                  result = iterator.next();
-              }
+              ret = Array.from(source, renderItem);
           }
           else {
               const keys = Object.keys(source);
@@ -3836,6 +3947,9 @@ var VueTestRuntime = (function (exports) {
       }
       return slots;
   }
+
+  // Public API ------------------------------------------------------------------
+  const version = "3.0.0-alpha.1";
 
   let nodeId = 0;
   let recordedNodeOps = [];
@@ -4050,7 +4164,7 @@ var VueTestRuntime = (function (exports) {
           const value = node.props[key];
           return isOn(key) || value == null ? `` : `${key}=${JSON.stringify(value)}`;
       })
-          .filter(_ => _)
+          .filter(Boolean)
           .join(' ');
       const padding = indent ? ` `.repeat(indent).repeat(depth) : ``;
       return (`${padding}<${node.tag}${props ? ` ${props}` : ``}>` +
@@ -4182,7 +4296,6 @@ var VueTestRuntime = (function (exports) {
   exports.ShapeFlags = PublicShapeFlags;
   exports.Suspense = Suspense;
   exports.Text = Text;
-  exports.applyDirectives = applyDirectives;
   exports.callWithAsyncErrorHandling = callWithAsyncErrorHandling;
   exports.callWithErrorHandling = callWithErrorHandling;
   exports.camelize = camelize;
@@ -4235,6 +4348,7 @@ var VueTestRuntime = (function (exports) {
   exports.resetOps = resetOps;
   exports.resolveComponent = resolveComponent;
   exports.resolveDirective = resolveDirective;
+  exports.resolveDynamicComponent = resolveDynamicComponent;
   exports.serialize = serialize;
   exports.serializeInner = serializeInner;
   exports.toHandlers = toHandlers;
@@ -4242,8 +4356,10 @@ var VueTestRuntime = (function (exports) {
   exports.toRefs = toRefs;
   exports.toString = toString;
   exports.triggerEvent = triggerEvent;
+  exports.version = version;
   exports.warn = warn;
   exports.watch = watch;
+  exports.withDirectives = withDirectives;
 
   return exports;
 
